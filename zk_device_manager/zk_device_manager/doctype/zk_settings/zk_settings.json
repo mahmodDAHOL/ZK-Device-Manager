@@ -19,7 +19,15 @@
   "agent_version",
   "column_break_agent",
   "last_heartbeat",
-  "sdk_available"
+  "sdk_available",
+  "section_break_attendance",
+  "auto_fetch_attendance",
+  "attendance_interval_minutes",
+  "last_scheduled_attendance",
+  "column_break_attendance",
+  "attendance_company",
+  "attendance_doctype",
+  "attendance_docname"
  ],
  "fields": [
   {
@@ -111,6 +119,54 @@
    "label": "Faces/Photos Available",
    "read_only": 1,
    "description": "Whether the agent's computer has the ZKTeco SDK. Without it, users are still managed but faces and photos are not."
+  },
+  {
+   "fieldname": "section_break_attendance",
+   "fieldtype": "Section Break",
+   "label": "Attendance",
+   "description": "Pulls every device's attendance and uploads it the way the fingerprint app's 'Fetch Checkins' reads it: one JSON file per device, attached to the Fingerprint record below, in the field attach_<company>_<slot>_data."
+  },
+  {
+   "fieldname": "auto_fetch_attendance",
+   "fieldtype": "Check",
+   "label": "Scheduled Attendance Fetch",
+   "default": "0"
+  },
+  {
+   "fieldname": "attendance_interval_minutes",
+   "fieldtype": "Int",
+   "label": "Every (minutes)",
+   "default": "60",
+   "depends_on": "auto_fetch_attendance"
+  },
+  {
+   "fieldname": "last_scheduled_attendance",
+   "fieldtype": "Datetime",
+   "label": "Last Attendance Fetch Queued",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_attendance",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "attendance_company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "description": "Its name, lower-cased with spaces as underscores, is part of each field name."
+  },
+  {
+   "fieldname": "attendance_doctype",
+   "fieldtype": "Data",
+   "label": "Upload To DocType",
+   "default": "Fingerprint"
+  },
+  {
+   "fieldname": "attendance_docname",
+   "fieldtype": "Data",
+   "label": "Upload To Record",
+   "default": "eg2g83k1ar"
   }
  ],
  "index_web_pages_for_search": 0,

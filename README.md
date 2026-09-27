@@ -66,10 +66,12 @@ This creates the roles **ZK Manager** (give it to HR) and **ZK Agent**.
 In ERPNext:
 
 1. Make a user for the agent (e.g. the existing `fingerprint@momc.gov.sy`),
-   give it **ZK Agent**, and generate its API key and secret.
+   give it **ZK Agent**, and generate its API key and secret. Also give ZK Agent
+   create/write/read on **ZK Sync Log** in Role Permission Manager: that doctype
+   belongs to another app, and the full sync writes to it.
 2. Add each device under **ZK Device** (name, IP, port 4370).
 
-On the office PC:
+On the middle server (full requirements: [MIDDLE_SERVER.md](MIDDLE_SERVER.md)):
 
 1. Install Python and the ZKTeco Standalone SDK (`Register_SDK_x64.bat` as
    administrator, same bitness as Python).

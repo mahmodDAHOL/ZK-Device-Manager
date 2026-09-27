@@ -10,6 +10,7 @@
   "port",
   "enabled",
   "location",
+  "attendance_slot",
   "column_break_status",
   "status",
   "last_seen",
@@ -70,6 +71,12 @@
    "fieldname": "location",
    "fieldtype": "Data",
    "label": "Location"
+  },
+  {
+   "fieldname": "attendance_slot",
+   "fieldtype": "Int",
+   "label": "Attendance Slot",
+   "description": "Which upload field this device's attendance goes to: n in attach_<company>_<n>_data on the Fingerprint record. Empty: attendance is not fetched from it."
   },
   {
    "fieldname": "column_break_status",

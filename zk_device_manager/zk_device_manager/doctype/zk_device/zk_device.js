@@ -20,6 +20,11 @@ frappe.ui.form.on("ZK Device", {
 						)
 			)
 		);
+		frm.add_custom_button(__("Fetch Attendance"), () =>
+			frappe
+				.call("zk_device_manager.api.queue_job", { job_type: "Fetch Attendance" })
+				.then((r) => frappe.show_alert({ message: __("Queued as {0}", [r.message]), indicator: "green" }))
+		);
 		frm.add_custom_button(__("Users on Device"), () =>
 			frappe.set_route("List", "ZK Device User", { device: frm.doc.name })
 		);

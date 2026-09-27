@@ -51,22 +51,31 @@ def _loads(value, default=None):
 	return json.loads(value)
 
 
+DEVICE_FIELDS = ["name", "ip_address", "port", "enabled", "attendance_slot"]
+
+
+def _as_payload(row):
+	return {
+		"name": row.name,
+		"ip": row.ip_address,
+		"port": cint(row.port) or 4370,
+		"enabled": cint(row.enabled),
+		"attendance_slot": cint(row.attendance_slot) or None,
+	}
+
+
 def _device(name):
-	row = frappe.db.get_value(
-		"ZK Device", name, ["name", "ip_address", "port", "enabled"], as_dict=True
-	)
-	if not row:
-		return None
-	return {"name": row.name, "ip": row.ip_address, "port": cint(row.port) or 4370, "enabled": cint(row.enabled)}
+	row = frappe.db.get_value("ZK Device", name, DEVICE_FIELDS, as_dict=True)
+	return _as_payload(row) if row else None
 
 
 def _enabled_devices():
 	return [
-		{"name": d.name, "ip": d.ip_address, "port": cint(d.port) or 4370, "enabled": 1}
+		_as_payload(d)
 		for d in frappe.get_all(
 			"ZK Device",
 			filters={"enabled": 1},
-			fields=["name", "ip_address", "port"],
+			fields=DEVICE_FIELDS,
 			order_by="device_name asc",
 		)
 	]
@@ -166,6 +175,13 @@ def _payload(job):
 			"sync_copy_faces": cint(settings.sync_copy_faces),
 			"sync_copy_photos": cint(settings.sync_copy_photos),
 			"refresh_after_sync": cint(settings.refresh_after_sync),
+		},
+		# Where Fetch Attendance uploads to: the record and fields the
+		# fingerprint app's "Fetch Checkins" reads.
+		"attendance": {
+			"company": settings.attendance_company,
+			"doctype": settings.attendance_doctype or "Fingerprint",
+			"docname": settings.attendance_docname,
 		},
 	}
 

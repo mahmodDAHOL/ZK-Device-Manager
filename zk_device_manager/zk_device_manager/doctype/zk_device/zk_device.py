@@ -16,3 +16,13 @@ class ZKDevice(Document):
 			self.port = 4370
 		if not 1 <= int(self.port) <= 65535:
 			frappe.throw(_("Port must be between 1 and 65535."))
+		if self.attendance_slot:
+			# Two devices in one slot would overwrite each other's attendance
+			# file, and one of them would never reach Fetch Checkins.
+			other = frappe.db.get_value(
+				"ZK Device",
+				{"attendance_slot": self.attendance_slot, "name": ("!=", self.name)},
+				"name",
+			)
+			if other:
+				frappe.throw(_("{0} already uses attendance slot {1}.").format(other, self.attendance_slot))

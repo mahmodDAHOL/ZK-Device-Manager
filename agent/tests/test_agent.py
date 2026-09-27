@@ -41,7 +41,7 @@ DEVICES = {}
 
 
 class FakeConn:
-    def __init__(self, ip, port=4370, password=0):
+    def __init__(self, ip, port=4370, password=0, timeout=8):
         self.d = DEVICES[ip]
         self.users, self.users_cap, self.fingers, self.fingers_cap = 0, 10000, 0, 4000
         self.faces, self.faces_cap, self.records, self.rec_cap = 0, 3000, 0, 100000
@@ -277,6 +277,85 @@ a.run_one()
 check("no SDK: user still added", "1174" in DEVICES["10.0.0.2"]["users"])
 check("no SDK: no face written", "1174" not in DEVICES["10.0.0.2"]["faces"])
 check("no SDK: fingerprints still copied (pyzk)", len(DEVICES["10.0.0.2"]["fps"].get("1174", [])) == 2)
+
+# 10. Fetch Attendance: the same files, fields and JSON as the old script.
+import datetime as _dt  # noqa: E402
+import json as _json  # noqa: E402
+from zk.attendance import Attendance  # noqa: E402
+
+RECORDS = {
+    "10.0.0.1": [Attendance("1174", _dt.datetime(2026, 9, 27, 8, 1, 5), 1, 0, 2),
+                 Attendance("1", _dt.datetime(2026, 9, 27, 8, 3, 0), 15, 0, 1)],
+    "10.0.0.2": [],
+    "10.0.0.3": [Attendance("1174", _dt.datetime(2026, 9, 27, 16, 0, 0), 1, 1, 7)],
+}
+FakeConn.get_attendance = lambda self: RECORDS[[ip for ip, d in DEVICES.items() if d is self.d][0]]
+zk_ops.DeviceConnection = FakeConn
+
+
+class FileERP(FakeERP):
+    def __init__(self, fail_on=None):
+        super().__init__()
+        self.files, self.fail_on, self.n = {}, fail_on, 0
+
+    def upload_attachment(self, path, file_name, doctype, docname, fieldname):
+        if self.fail_on and self.fail_on in file_name:
+            raise RuntimeError("HTTP 500")
+        self.n += 1
+        name = f"F{self.n}"
+        self.files[name] = {"name": name, "file_name": file_name, "field": (doctype, docname, fieldname),
+                            "content": open(path, encoding="utf-8").read()}
+        return {"name": name, "file_url": f"/private/files/{file_name}"}
+
+    def attachments(self, doctype, docname, fieldname):
+        return [f for f in self.files.values() if f["field"] == (doctype, docname, fieldname)]
+
+    def delete_file(self, name):
+        self.files.pop(name)
+
+
+def old_script_output(company, n, ip, records):
+    """What the middle server's attendance script writes, verbatim."""
+    device_id = f"{company}_{n}"
+    return (
+        f"{device_id}_{ip.replace('.', '_')}_last_fetch_dump.json",
+        f"attach_{device_id}_data".lower().replace(" ", "_"),
+        _json.dumps(list(map(lambda x: x.__dict__, records)), default=_dt.datetime.timestamp),
+    )
+
+
+ATT = {"company": "Ministry of Information", "doctype": "Fingerprint", "docname": "eg2g83k1ar"}
+SA, SB, SC = dict(A, attendance_slot=2), dict(B, attendance_slot=3), dict(C, attendance_slot=4)
+reset(); a = agent(); a.erp = FileERP()
+a.erp.files["OLD"] = {"name": "OLD", "file_name": "old.json", "field": ("Fingerprint", "eg2g83k1ar", "attach_ministry_of_information_2_data"), "content": "[]"}
+a.erp.queue = [job("Fetch Attendance", [SA, SB, SC, dict(D("N", "10.0.0.1"))], user=None, attendance=ATT)]
+a.run_one()
+fname, field, content = old_script_output("Ministry of Information", 2, "10.0.0.1", RECORDS["10.0.0.1"])
+up_a = [f for f in a.erp.files.values() if f["field"][2] == field]
+check("A: same field as the old script", field == "attach_ministry_of_information_2_data" and len(up_a) == 1)
+check("A: same file name as the old script", up_a[0]["file_name"] == fname)
+check("A: byte-identical JSON", up_a[0]["content"] == content)
+check("A: the previous file was replaced", "OLD" not in a.erp.files)
+check("B: empty device skipped, others still uploaded", not [f for f in a.erp.files.values() if "_3_" in f["file_name"]]
+      and any("_4_" in f["file_name"] for f in a.erp.files.values()))
+check("device without a slot skipped", "no attendance slot" in str(_json.loads(_json.dumps(a.erp.finished[-1]["result"]))["N"]))
+check("job Done", a.erp.finished[-1]["status"] == "Done")
+print("   ", a.erp.finished[-1]["summary"])
+
+# 11. Upload fails: the last good file stays.
+reset(); a = agent(); a.erp = FileERP(fail_on="_2_")
+a.erp.files["OLD"] = {"name": "OLD", "file_name": "old.json", "field": ("Fingerprint", "eg2g83k1ar", "attach_ministry_of_information_2_data"), "content": "[]"}
+a.erp.queue = [job("Fetch Attendance", [SA, SC], user=None, attendance=ATT)]
+a.run_one()
+check("failed upload keeps the previous file", "OLD" in a.erp.files)
+check("failed device reported, the other still uploaded", "failed: A" in a.erp.finished[-1]["summary"]
+      and any("_4_" in f["file_name"] for f in a.erp.files.values()))
+
+# 12. Dry run uploads nothing.
+reset(); a = agent(); a.erp = FileERP()
+a.erp.queue = [job("Fetch Attendance", [SA], user=None, attendance=ATT, dry_run=1)]
+a.run_one()
+check("dry-run attendance uploads nothing", a.erp.files == {})
 
 shutil.rmtree(TMP, ignore_errors=True)
 print("ALL AGENT TESTS PASSED")

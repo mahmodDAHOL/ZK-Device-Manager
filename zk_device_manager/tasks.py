@@ -6,6 +6,27 @@ from frappe.utils import add_to_date, cint, get_datetime, now_datetime
 def every_five_minutes():
 	fail_stuck_jobs()
 	queue_scheduled_sync()
+	queue_scheduled_attendance()
+
+
+def queue_scheduled_attendance():
+	"""Queues pulling attendance from every device, when it is due. What the
+	middle server's attendance script did on its own schedule, now a job like
+	the rest, so it never disables a device while a sync is writing to it."""
+	settings = frappe.get_single("ZK Settings")
+	if not cint(settings.auto_fetch_attendance):
+		return
+	interval = max(cint(settings.attendance_interval_minutes) or 60, 10)
+	last = settings.last_scheduled_attendance
+	if last and get_datetime(last) > add_to_date(now_datetime(), minutes=-interval):
+		return
+	if frappe.db.exists("ZK Job", {"job_type": "Fetch Attendance", "status": ("in", ("Queued", "Running"))}):
+		return
+	job = frappe.get_doc({"doctype": "ZK Job", "job_type": "Fetch Attendance"})
+	job.flags.ignore_permissions = True
+	job.insert()
+	frappe.db.set_single_value("ZK Settings", "last_scheduled_attendance", now_datetime())
+	frappe.db.commit()
 
 
 def fail_stuck_jobs():

@@ -15,6 +15,7 @@ site's devices (iFace880 plus, firmware 6.60) and is relied on here:
     shows the picture, copying the face is what lets the person punch in.
 """
 
+import json
 import logging
 import os
 import sys
@@ -44,8 +45,8 @@ class DeviceConnection:
     """A pyzk connection with the device disabled while it is held, so nobody
     punches in half-way through a write."""
 
-    def __init__(self, ip, port=4370, password=0):
-        self.ip, self.port, self.password = ip, port, password
+    def __init__(self, ip, port=4370, password=0, timeout=CONNECT_TIMEOUT):
+        self.ip, self.port, self.password, self.timeout = ip, port, password, timeout
         self.conn = None
 
     def __enter__(self):
@@ -53,7 +54,7 @@ class DeviceConnection:
         for attempt in range(1, RETRIES + 1):
             try:
                 self.conn = ZK(
-                    self.ip, port=self.port, timeout=CONNECT_TIMEOUT, password=self.password
+                    self.ip, port=self.port, timeout=self.timeout, password=self.password
                 ).connect()
                 self.conn.disable_device()
                 return self.conn
@@ -152,6 +153,27 @@ def put_user(conn, users, fields):
     # added user lands in the same slot, each replacing the one before.
     conn.set_user(uid=None, password="", group_id="", **common)
     return "added"
+
+
+def read_attendance(ip, port=4370):
+    """Every attendance record on the device, as pyzk Attendance objects.
+
+    30 seconds a packet, as the middle server's own attendance script used:
+    a device holding 16,000 records answers slowly. The device is re-enabled
+    however the read ends — the old script left it disabled when it failed.
+    """
+    with DeviceConnection(ip, port, timeout=30) as conn:
+        return conn.get_attendance()
+
+
+def attendance_json(records):
+    """The records exactly as the fingerprint app's Fetch Checkins has always
+    received them: each record's fields (uid, user_id, timestamp, status,
+    punch) with the timestamp as Unix seconds in this computer's timezone."""
+    return json.dumps(
+        [r.__dict__ for r in records],
+        default=datetime.timestamp,
+    )
 
 
 # ---------------- ZKTeco SDK ----------------

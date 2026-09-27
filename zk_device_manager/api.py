@@ -14,6 +14,7 @@ from frappe.utils import add_to_date, get_datetime, now_datetime
 JOB_TYPES = (
 	"Sync All Devices",
 	"Refresh Device State",
+	"Fetch Attendance",
 	"Add User",
 	"Update User",
 	"Remove User",

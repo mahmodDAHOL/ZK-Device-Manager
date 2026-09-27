@@ -98,6 +98,45 @@ class ERPNext:
             raise RuntimeError(f"{method}: HTTP {r.status_code}: {_server_message(r)}")
         return r.json().get("message")
 
+    def upload_attachment(self, path, file_name, doctype, docname, fieldname):
+        """Attaches a file to a record's field, as the attendance script always
+        has: private, linked by doctype/docname/fieldname. Answers the File doc."""
+        with open(path, "rb") as f:
+            r = self.session.post(
+                f"{self.url}/api/method/upload_file",
+                files={"file": (file_name, f, "application/json")},
+                data={"is_private": 1, "doctype": doctype, "docname": docname, "fieldname": fieldname},
+                timeout=120,
+            )
+        if not r.ok:
+            raise RuntimeError(f"upload_file: HTTP {r.status_code}: {_server_message(r)}")
+        message = r.json().get("message")
+        if not message:
+            raise RuntimeError(f"upload_file answered no file: {r.text[:300]}")
+        return message
+
+    def attachments(self, doctype, docname, fieldname):
+        filters = json.dumps(
+            [
+                ["attached_to_doctype", "=", doctype],
+                ["attached_to_name", "=", docname],
+                ["attached_to_field", "=", fieldname],
+            ]
+        )
+        r = self.session.get(
+            f"{self.url}/api/resource/File",
+            params={"filters": filters, "fields": json.dumps(["name", "file_name"]), "limit_page_length": 0},
+            timeout=60,
+        )
+        if not r.ok:
+            raise RuntimeError(f"File list: HTTP {r.status_code}: {_server_message(r)}")
+        return r.json().get("data", [])
+
+    def delete_file(self, name):
+        r = self.session.delete(f"{self.url}/api/resource/File/{name}", timeout=60)
+        if r.status_code not in (200, 202):
+            raise RuntimeError(f"delete File {name}: HTTP {r.status_code}: {_server_message(r)}")
+
 
 def _server_message(response):
     try:
@@ -226,6 +265,7 @@ class Agent:
         handler = {
             "Sync All Devices": self.sync_all,
             "Refresh Device State": self.refresh,
+            "Fetch Attendance": self.fetch_attendance,
             "Add User": self.add_user,
             "Update User": self.update_user,
             "Remove User": self.remove_user,
@@ -268,6 +308,69 @@ class Agent:
         if not self.sdk_ok:
             summary += " (faces/photos not read: no SDK)"
         return summary, outcome, None
+
+    def fetch_attendance(self, job):
+        """What the middle server's attendance script did, as a job.
+
+        Kept identical where the fingerprint app's Fetch Checkins reads it: one
+        file per device named "<Company>_<slot>_<ip with _>_last_fetch_dump.json",
+        attached privately to the Fingerprint record in the field
+        "attach_<company lower, spaces as _>_<slot>_data", holding the records
+        as attendance_json writes them.
+
+        Different where the script could lose or stall data:
+          * the new file is uploaded before the old one is deleted, so a
+            failed upload leaves the last good file in place;
+          * one device failing, or holding no records, no longer stops every
+            other device from being uploaded;
+          * a device is re-enabled even when reading it fails.
+        """
+        att = job.get("attendance") or {}
+        company, doctype, docname = att.get("company"), att.get("doctype") or "Fingerprint", att.get("docname")
+        if not company or not docname:
+            raise JobFailed("Set the Company and the record to upload to, in ZK Settings > Attendance")
+        folder = os.path.join(LOG_DIR, "attendance")
+        os.makedirs(folder, exist_ok=True)
+
+        result = {}
+        for device in job["targets"]:
+            slot = device.get("attendance_slot")
+            if not slot:
+                result[device["name"]] = {"skipped": "no attendance slot set on the ZK Device"}
+                continue
+            device_id = f"{company}_{slot}"
+            file_name = f"{device_id}_{device['ip'].replace('.', '_')}_last_fetch_dump.json"
+            fieldname = f"attach_{device_id}_data".lower().replace(" ", "_")
+            try:
+                records = zk_ops.read_attendance(device["ip"], device["port"])
+                r = {"records": len(records), "field": fieldname}
+                if not records:
+                    # Nothing to send; the file already on the record stays.
+                    r["upload"] = "skipped, no records on the device"
+                elif job["dry_run"]:
+                    r["upload"] = "would upload"
+                else:
+                    path = os.path.join(folder, file_name)
+                    with open(path, "w", encoding="utf-8") as f:
+                        f.write(zk_ops.attendance_json(records))
+                    new = self.erp.upload_attachment(path, file_name, doctype, docname, fieldname)
+                    old = [x["name"] for x in self.erp.attachments(doctype, docname, fieldname) if x["name"] != new.get("name")]
+                    for name in old:
+                        self.erp.delete_file(name)
+                    r["upload"] = f"uploaded {new.get('file_url')}, replaced {len(old)}"
+                result[device["name"]] = r
+            except Exception as e:
+                result[device["name"]] = {"error": str(e)}
+            log.info("  %s: %s", device["name"], result[device["name"]])
+
+        done = [d for d, r in result.items() if str(r.get("upload", "")).startswith(("uploaded", "would"))]
+        failed = [d for d, r in result.items() if r.get("error")]
+        summary = f"{'[DRY RUN] ' if job['dry_run'] else ''}Attendance from {len(done)} device(s)"
+        total = sum(r.get("records", 0) for r in result.values())
+        summary += f", {total} records"
+        if failed:
+            summary += f"; failed: {', '.join(failed)}"
+        return summary, result, None
 
     def sync_all(self, job):
         """Runs zk_union_sync.py unchanged, so the sync still writes its own
