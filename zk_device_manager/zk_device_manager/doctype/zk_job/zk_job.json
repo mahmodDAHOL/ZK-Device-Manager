@@ -1,0 +1,254 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-09-27 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "job_type",
+  "status",
+  "zk_user",
+  "dry_run",
+  "column_break_targets",
+  "target_devices",
+  "source_device",
+  "section_break_what",
+  "copy_faces",
+  "column_break_what1",
+  "copy_photos",
+  "column_break_what2",
+  "copy_fingerprints",
+  "section_break_run",
+  "requested_by",
+  "claimed_by",
+  "sync_log",
+  "column_break_run",
+  "started_at",
+  "finished_at",
+  "summary",
+  "section_break_detail",
+  "error",
+  "result"
+ ],
+ "fields": [
+  {
+   "fieldname": "job_type",
+   "fieldtype": "Select",
+   "label": "Job",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "options": "Sync All Devices\nRefresh Device State\nAdd User\nUpdate User\nRemove User\nCopy Biometrics"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Queued\nRunning\nDone\nFailed\nCancelled",
+   "default": "Queued",
+   "read_only": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "zk_user",
+   "fieldtype": "Link",
+   "label": "User",
+   "options": "ZK User",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "depends_on": "eval:!['Sync All Devices','Refresh Device State'].includes(doc.job_type)",
+   "mandatory_depends_on": "eval:!['Sync All Devices','Refresh Device State'].includes(doc.job_type)"
+  },
+  {
+   "fieldname": "dry_run",
+   "fieldtype": "Check",
+   "label": "Dry Run",
+   "description": "Only report what would change; write nothing to the devices."
+  },
+  {
+   "fieldname": "column_break_targets",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "target_devices",
+   "fieldtype": "Table MultiSelect",
+   "label": "Devices",
+   "options": "ZK Job Device",
+   "description": "Leave empty for every enabled device (for Update User: every device they are on)."
+  },
+  {
+   "fieldname": "source_device",
+   "fieldtype": "Link",
+   "label": "Copy From",
+   "options": "ZK Device",
+   "depends_on": "eval:['Add User','Copy Biometrics'].includes(doc.job_type)",
+   "description": "Leave empty to take them from any device that has them."
+  },
+  {
+   "fieldname": "section_break_what",
+   "fieldtype": "Section Break",
+   "label": "Copy",
+   "depends_on": "eval:['Sync All Devices','Add User','Copy Biometrics'].includes(doc.job_type)"
+  },
+  {
+   "fieldname": "copy_faces",
+   "fieldtype": "Check",
+   "label": "Faces",
+   "default": "1"
+  },
+  {
+   "fieldname": "column_break_what1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "copy_photos",
+   "fieldtype": "Check",
+   "label": "Photos",
+   "default": "1"
+  },
+  {
+   "fieldname": "column_break_what2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "copy_fingerprints",
+   "fieldtype": "Check",
+   "label": "Fingerprints",
+   "default": "1",
+   "depends_on": "eval:doc.job_type!='Sync All Devices'"
+  },
+  {
+   "fieldname": "section_break_run",
+   "fieldtype": "Section Break",
+   "label": "Run"
+  },
+  {
+   "fieldname": "requested_by",
+   "fieldtype": "Link",
+   "label": "Requested By",
+   "options": "User",
+   "read_only": 1,
+   "default": "__user"
+  },
+  {
+   "fieldname": "claimed_by",
+   "fieldtype": "Data",
+   "label": "Agent",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sync_log",
+   "fieldtype": "Data",
+   "label": "ZK Sync Log",
+   "read_only": 1,
+   "description": "For a full sync: the ZK Sync Log record the sync wrote."
+  },
+  {
+   "fieldname": "column_break_run",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "started_at",
+   "fieldtype": "Datetime",
+   "label": "Started",
+   "read_only": 1
+  },
+  {
+   "fieldname": "finished_at",
+   "fieldtype": "Datetime",
+   "label": "Finished",
+   "read_only": 1
+  },
+  {
+   "fieldname": "summary",
+   "fieldtype": "Small Text",
+   "label": "Summary",
+   "read_only": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "section_break_detail",
+   "fieldtype": "Section Break",
+   "label": "Detail",
+   "collapsible": 1
+  },
+  {
+   "fieldname": "error",
+   "fieldtype": "Code",
+   "label": "Error",
+   "read_only": 1
+  },
+  {
+   "fieldname": "result",
+   "fieldtype": "Code",
+   "label": "Result",
+   "read_only": 1,
+   "options": "JSON"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-09-27 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "ZK Device Manager",
+ "name": "ZK Job",
+ "owner": "Administrator",
+ "states": [],
+ "track_changes": 1,
+ "autoname": "format:ZKJ-{YYYY}-{#####}",
+ "naming_rule": "Expression",
+ "description": "Something for the agent to do on the devices. Queued here, carried out by the agent on the office network, and reported back.",
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "report": 1,
+   "export": 1,
+   "email": 0,
+   "print": 0,
+   "share": 0
+  },
+  {
+   "role": "ZK Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 0,
+   "report": 1,
+   "export": 0,
+   "email": 0,
+   "print": 0,
+   "share": 0
+  },
+  {
+   "role": "ZK Agent",
+   "read": 1,
+   "write": 1,
+   "create": 0,
+   "delete": 0,
+   "report": 1,
+   "export": 0,
+   "email": 0,
+   "print": 0,
+   "share": 0
+  },
+  {
+   "role": "HR Manager",
+   "read": 1,
+   "write": 0,
+   "create": 0,
+   "delete": 0,
+   "report": 1,
+   "export": 0,
+   "email": 0,
+   "print": 0,
+   "share": 0
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC"
+}

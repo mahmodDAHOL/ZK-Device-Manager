@@ -1,0 +1,558 @@
+#!/usr/bin/env python3
+"""ZK Device Manager agent.
+
+Runs on a Windows PC on the devices' network (192.168.67.x). It asks ERPNext
+for queued ZK Jobs, carries them out on the devices, and reports back what the
+devices hold. ERPNext never connects to it; it only ever connects out.
+
+    python zk_agent.py            # run for good (what run_agent.bat does)
+    python zk_agent.py --once     # take one job, if any, and exit
+    python zk_agent.py --refresh  # read every device into ERPNext now, then exit
+
+Settings come from config.ini next to this file (see config.example.ini).
+"""
+
+import argparse
+import configparser
+import json
+import logging
+import os
+import re
+import socket
+import subprocess
+import sys
+import time
+import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from logging.handlers import RotatingFileHandler
+
+import requests
+
+import zk_ops
+from zk_ops import DeviceConnection, SdkConnection
+
+VERSION = "0.1.0"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+LOG_DIR = os.path.join(BASE_DIR, "logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+
+log = logging.getLogger("zk-agent")
+
+
+def setup_logging():
+    fmt = logging.Formatter("%(asctime)s  %(levelname)-7s  %(message)s", "%Y-%m-%d %H:%M:%S")
+    log.setLevel(logging.INFO)
+    file_handler = RotatingFileHandler(
+        os.path.join(LOG_DIR, "agent.log"), maxBytes=5_000_000, backupCount=10, encoding="utf-8"
+    )
+    file_handler.setFormatter(fmt)
+    console = logging.StreamHandler()
+    console.setFormatter(fmt)
+    log.addHandler(file_handler)
+    log.addHandler(console)
+
+
+# ---------------- config ----------------
+
+def load_config():
+    cfg = configparser.ConfigParser()
+    cfg.read(os.path.join(BASE_DIR, "config.ini"), encoding="utf-8")
+
+    def get(section, key, env, default=""):
+        return os.environ.get(env) or cfg.get(section, key, fallback=default)
+
+    conf = {
+        "url": get("erpnext", "url", "ERPNEXT_URL").rstrip("/"),
+        "api_key": get("erpnext", "api_key", "ERPNEXT_API_KEY"),
+        "api_secret": get("erpnext", "api_secret", "ERPNEXT_API_SECRET"),
+        "name": get("agent", "name", "ZK_AGENT_NAME") or socket.gethostname(),
+        "bio_workers": int(get("agent", "bio_workers", "ZK_AGENT_BIO_WORKERS", "4")),
+        "sync_timeout_minutes": int(get("agent", "sync_timeout_minutes", "ZK_AGENT_SYNC_TIMEOUT", "240")),
+    }
+    missing = [k for k in ("url", "api_key", "api_secret") if not conf[k]]
+    if missing:
+        sys.exit(f"Missing in config.ini [erpnext]: {', '.join(missing)}")
+    return conf
+
+
+# ---------------- ERPNext ----------------
+
+class ERPNext:
+    def __init__(self, conf):
+        self.url = conf["url"]
+        self.session = requests.Session()
+        self.session.headers.update(
+            {
+                "Authorization": f"token {conf['api_key']}:{conf['api_secret']}",
+                "Accept": "application/json",
+            }
+        )
+
+    def call(self, method, **kwargs):
+        r = self.session.post(
+            f"{self.url}/api/method/zk_device_manager.agent_api.{method}",
+            json=kwargs,
+            timeout=120,
+        )
+        if not r.ok:
+            raise RuntimeError(f"{method}: HTTP {r.status_code}: {_server_message(r)}")
+        return r.json().get("message")
+
+
+def _server_message(response):
+    try:
+        body = response.json()
+    except ValueError:
+        return response.text[:500]
+    for key in ("exception", "_server_messages", "message", "exc_type"):
+        if body.get(key):
+            return str(body[key])[:1000]
+    return response.text[:500]
+
+
+# ---------------- reading devices into ERPNext ----------------
+
+def read_device_state(device, sdk_ok, only_users=None):
+    """Everything one device holds, in the shape report_users takes.
+
+    With `only_users`, only those users are read (after a job about one
+    person); otherwise everyone (a refresh). Answers (info, entries).
+    """
+    with DeviceConnection(device["ip"], device["port"]) as conn:
+        info = zk_ops.read_info(conn)
+        users = zk_ops.users_by_id(conn)
+        fps = zk_ops.fingerprint_counts(conn, users)
+    wanted = [u for u in users if only_users is None or u in only_users]
+    entries = {
+        uid: {
+            "user_id": uid,
+            "user_name": users[uid].name,
+            "privilege": users[uid].privilege,
+            "card_number": users[uid].card,
+            "device_uid": users[uid].uid,
+            "fingerprints": fps.get(uid, 0),
+        }
+        for uid in wanted
+    }
+    if sdk_ok and wanted:
+        folder = zk_ops.device_photo_folder(device["ip"], "state")
+        photos = 0
+        with SdkConnection(device["ip"], device["port"]) as sdk:
+            for uid in wanted:
+                entries[uid]["has_face"] = 1 if sdk.read_face(uid) else 0
+                path = sdk.download_photo(uid, folder)
+                entries[uid]["has_photo"] = 1 if path else 0
+                photos += 1 if path else 0
+                if path:
+                    os.remove(path)
+        if only_users is None:
+            info["photo_count"] = photos
+    return info, list(entries.values())
+
+
+def report_devices(erp, devices, sdk_ok, workers, only_users=None):
+    """Reads each device (in parallel) and writes what it holds into ERPNext.
+    Answers {device: short outcome}."""
+    outcome = {}
+
+    def one(device):
+        try:
+            info, entries = read_device_state(device, sdk_ok, only_users)
+        except Exception as e:
+            erp.call("report_device", device=device["name"], error=str(e))
+            return device["name"], f"unreachable: {e}"
+        erp.call("report_device", device=device["name"], info=info)
+        res = erp.call(
+            "report_users",
+            device=device["name"],
+            users=entries,
+            complete=0 if only_users else 1,
+        )
+        return device["name"], f"{len(entries)} users read ({res})"
+
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        for fut in as_completed([pool.submit(one, d) for d in devices]):
+            name, text = fut.result()
+            outcome[name] = text
+            log.info("  %s: %s", name, text)
+    return outcome
+
+
+# ---------------- jobs ----------------
+
+class JobFailed(Exception):
+    pass
+
+
+class Agent:
+    def __init__(self, conf):
+        self.conf = conf
+        self.erp = ERPNext(conf)
+        self.sdk_ok, self.sdk_why = zk_ops.sdk_available()
+        if not self.sdk_ok:
+            log.warning("Faces and photos unavailable: %s. Users are still managed.", self.sdk_why)
+
+    # -- loop --
+
+    def heartbeat(self):
+        return self.erp.call(
+            "heartbeat",
+            host=f"{self.conf['name']} ({socket.gethostname()})",
+            version=VERSION,
+            sdk_available=1 if self.sdk_ok else 0,
+        )
+
+    def run_forever(self):
+        poll = 30
+        while True:
+            try:
+                poll = (self.heartbeat() or {}).get("poll_seconds", poll)
+                while self.run_one():
+                    pass
+            except requests.RequestException as e:
+                log.warning("ERPNext unreachable: %s", e)
+            except Exception:
+                log.exception("Agent loop error")
+            time.sleep(poll)
+
+    def run_one(self):
+        """Takes and runs one job; answers whether there was one."""
+        job = self.erp.call("claim_job", agent=self.conf["name"])
+        if not job:
+            return False
+        log.info("JOB %s: %s%s", job["name"], job["job_type"], " (dry run)" if job["dry_run"] else "")
+        for name in job.get("skipped_devices") or []:
+            log.info("  skipping %s: disabled or unknown", name)
+        handler = {
+            "Sync All Devices": self.sync_all,
+            "Refresh Device State": self.refresh,
+            "Add User": self.add_user,
+            "Update User": self.update_user,
+            "Remove User": self.remove_user,
+            "Copy Biometrics": self.copy_biometrics,
+        }.get(job["job_type"])
+        try:
+            if not handler:
+                raise JobFailed(f"This agent does not know how to do {job['job_type']}")
+            summary, result, sync_log = handler(job)
+            status, error = "Done", None
+            failed = [d for d, r in (result or {}).items() if isinstance(r, dict) and r.get("error")]
+            if failed and len(failed) == len(result):
+                status = "Failed"
+        except JobFailed as e:
+            summary, result, sync_log, status, error = str(e), None, None, "Failed", str(e)
+        except Exception as e:
+            summary, result, sync_log, status = f"Failed: {e}", None, None, "Failed"
+            error = traceback.format_exc()
+        log.info("JOB %s %s: %s", job["name"], status, summary)
+        self.erp.call(
+            "finish_job",
+            job=job["name"],
+            status=status,
+            summary=summary,
+            result=result,
+            error=error,
+            sync_log=sync_log,
+        )
+        return True
+
+    # -- handlers: each answers (summary, result, sync_log) --
+
+    def refresh(self, job):
+        targets = job["targets"]
+        outcome = report_devices(self.erp, targets, self.sdk_ok, self.conf["bio_workers"])
+        bad = [d for d, t in outcome.items() if t.startswith("unreachable")]
+        summary = f"Read {len(targets) - len(bad)} of {len(targets)} device(s)"
+        if bad:
+            summary += f"; unreachable: {', '.join(bad)}"
+        if not self.sdk_ok:
+            summary += " (faces/photos not read: no SDK)"
+        return summary, outcome, None
+
+    def sync_all(self, job):
+        """Runs zk_union_sync.py unchanged, so the sync still writes its own
+        ZK Sync Log record exactly as before."""
+        script = os.path.join(BASE_DIR, "zk_union_sync.py")
+        args = [sys.executable, script, "--ips", ",".join(d["ip"] for d in job["targets"])]
+        if job["dry_run"]:
+            args.append("--dry-run")
+        if not job["copy_faces"]:
+            args.append("--no-faces")
+        if not job["copy_photos"]:
+            args.append("--no-photos")
+        env = dict(
+            os.environ,
+            ERPNEXT_URL=self.conf["url"],
+            ERPNEXT_API_KEY=self.conf["api_key"],
+            ERPNEXT_API_SECRET=self.conf["api_secret"],
+            PYTHONIOENCODING="utf-8",
+        )
+        log.info("  running %s", " ".join(args[1:]))
+        out_path = os.path.join(LOG_DIR, f"sync_{job['name']}.log")
+        with open(out_path, "w", encoding="utf-8") as out:
+            try:
+                proc = subprocess.run(
+                    args,
+                    cwd=BASE_DIR,
+                    env=env,
+                    stdout=out,
+                    stderr=subprocess.STDOUT,
+                    timeout=self.conf["sync_timeout_minutes"] * 60,
+                )
+            except subprocess.TimeoutExpired:
+                raise JobFailed(f"The sync ran past {self.conf['sync_timeout_minutes']} minutes and was stopped")
+        text = open(out_path, encoding="utf-8", errors="replace").read()
+        sync_log = _first(r"ERPNext log created: (\S+)", text)
+        done = _first(r"DONE — (.+)", text)
+        if proc.returncode != 0 or not done:
+            tail = "\n".join(text.strip().splitlines()[-15:])
+            raise JobFailed(f"The sync failed (exit {proc.returncode}):\n{tail}")
+        result = {"sync_output": out_path}
+        if job["settings"].get("refresh_after_sync") and not job["dry_run"]:
+            log.info("  refreshing device state after the sync")
+            result["refresh"] = report_devices(self.erp, job["targets"], self.sdk_ok, self.conf["bio_workers"])
+        return done, result, sync_log
+
+    def add_user(self, job):
+        user = job["user"]
+        uid = user["user_id"]
+        result = {}
+        for device in job["targets"]:
+            try:
+                if job["dry_run"]:
+                    with DeviceConnection(device["ip"], device["port"]) as conn:
+                        there = uid in zk_ops.users_by_id(conn)
+                    result[device["name"]] = {"would": "update" if there else "add"}
+                    continue
+                with DeviceConnection(device["ip"], device["port"]) as conn:
+                    users = zk_ops.users_by_id(conn)
+                    result[device["name"]] = {"user": zk_ops.put_user(conn, users, user)}
+            except Exception as e:
+                result[device["name"]] = {"error": str(e)}
+        written = [d for d in job["targets"] if "user" in result.get(d["name"], {})]
+        if any([job["copy_faces"], job["copy_photos"], job["copy_fingerprints"]]) and (written or job["dry_run"]):
+            copied = self._copy_bio(job, written if not job["dry_run"] else job["targets"])
+            for name, r in copied.items():
+                result.setdefault(name, {}).update(r)
+        if not job["dry_run"]:
+            self._report_user(job["targets"], uid)
+        return _summary(f"Add {user['user_name']} ({uid})", result, job["dry_run"]), result, None
+
+    def update_user(self, job):
+        user = job["user"]
+        uid = user["user_id"]
+        result = {}
+        for device in job["targets"]:
+            try:
+                with DeviceConnection(device["ip"], device["port"]) as conn:
+                    users = zk_ops.users_by_id(conn)
+                    if uid not in users:
+                        result[device["name"]] = {"skipped": "not on this device"}
+                    elif job["dry_run"]:
+                        result[device["name"]] = {"would": "update"}
+                    else:
+                        result[device["name"]] = {"user": zk_ops.put_user(conn, users, user)}
+            except Exception as e:
+                result[device["name"]] = {"error": str(e)}
+        if not job["dry_run"]:
+            self._report_user(job["targets"], uid)
+        return _summary(f"Update {user['user_name']} ({uid})", result, job["dry_run"]), result, None
+
+    def remove_user(self, job):
+        user = job["user"]
+        uid = user["user_id"]
+        result = {}
+        for device in job["targets"]:
+            try:
+                # The face first: once the user is deleted it is gone with them.
+                backup = None
+                if self.sdk_ok and not job["dry_run"]:
+                    with SdkConnection(device["ip"], device["port"]) as sdk:
+                        face = sdk.read_face(uid)
+                        if face:
+                            backup = zk_ops.backup_face(uid, face, device["ip"], reason="removed")
+                with DeviceConnection(device["ip"], device["port"]) as conn:
+                    users = zk_ops.users_by_id(conn)
+                    if uid not in users:
+                        result[device["name"]] = {"skipped": "not on this device"}
+                    elif job["dry_run"]:
+                        result[device["name"]] = {"would": "remove"}
+                    else:
+                        conn.delete_user(uid=users[uid].uid, user_id=uid)
+                        result[device["name"]] = {"user": "removed", "face_backup": backup}
+                if not job["dry_run"] and result[device["name"]].get("user") == "removed":
+                    self.erp.call("report_users", device=device["name"], users=[], removed=[uid])
+            except Exception as e:
+                result[device["name"]] = {"error": str(e)}
+        return _summary(f"Remove {user['user_name']} ({uid})", result, job["dry_run"]), result, None
+
+    def copy_biometrics(self, job):
+        user = job["user"]
+        result = self._copy_bio(job, job["targets"])
+        if not job["dry_run"]:
+            self._report_user(job["targets"], user["user_id"])
+        return _summary(f"Copy {user['user_name']} ({user['user_id']})", result, job["dry_run"]), result, None
+
+    # -- helpers --
+
+    def _copy_bio(self, job, targets):
+        """Copies the user's face, photo and fingerprints to each target that
+        lacks them, from the named source or any device that has them. Never
+        replaces what a target already has."""
+        uid = job["user"]["user_id"]
+        want_face = job["copy_faces"] and self.sdk_ok
+        want_photo = job["copy_photos"] and self.sdk_ok
+        want_fp = job["copy_fingerprints"]
+        target_names = {d["name"] for d in targets}
+        sources = [job["source"]] if job.get("source") else (
+            [d for d in job["all_devices"] if d["name"] not in target_names]
+            + [d for d in job["all_devices"] if d["name"] in target_names]
+        )
+
+        face = photo = None
+        fingers = []
+        found = {}
+        for device in sources:
+            if not ((want_face and not face) or (want_photo and not photo) or (want_fp and not fingers)):
+                break
+            try:
+                if (want_face and not face) or (want_photo and not photo):
+                    with SdkConnection(device["ip"], device["port"]) as sdk:
+                        if want_face and not face:
+                            face = sdk.read_face(uid)
+                            if face:
+                                found["face"] = device["name"]
+                                zk_ops.backup_face(uid, face, device["ip"], reason="copy")
+                        if want_photo and not photo:
+                            photo = sdk.download_photo(uid, zk_ops.device_photo_folder(device["ip"], "copy"))
+                            if photo:
+                                found["photo"] = device["name"]
+                if want_fp and not fingers:
+                    with DeviceConnection(device["ip"], device["port"]) as conn:
+                        users = zk_ops.users_by_id(conn)
+                        if uid in users:
+                            fingers = zk_ops.user_fingerprints(conn, users[uid])
+                            if fingers:
+                                found["fingerprints"] = device["name"]
+            except Exception as e:
+                log.warning("  %s: could not read %s from it: %s", device["name"], uid, e)
+
+        result = {}
+        for device in targets:
+            r = {"found_on": found} if found else {"found_on": "nowhere"}
+            try:
+                # A face or photo for someone the device does not have would
+                # belong to nobody there. Add User puts the person on first.
+                with DeviceConnection(device["ip"], device["port"]) as conn:
+                    present = uid in zk_ops.users_by_id(conn)
+                if not present and not job["dry_run"]:
+                    r["skipped"] = "user not on this device (use Add User)"
+                    result[device["name"]] = r
+                    continue
+                if (face or photo) and self.sdk_ok:
+                    with SdkConnection(device["ip"], device["port"]) as sdk:
+                        if face:
+                            if sdk.read_face(uid):
+                                r["face"] = "already there"
+                            elif job["dry_run"]:
+                                r["face"] = "would copy"
+                            else:
+                                ok = sdk.write_face(uid, face) and bool(sdk.read_face(uid))
+                                r["face"] = "copied" if ok else f"refused (SDK code {sdk.last_error()})"
+                        if photo:
+                            folder = zk_ops.device_photo_folder(device["ip"], "check")
+                            there = sdk.download_photo(uid, folder)
+                            if there:
+                                os.remove(there)
+                                r["photo"] = "already there"
+                            elif job["dry_run"]:
+                                r["photo"] = "would copy"
+                            else:
+                                r["photo"] = "copied" if sdk.upload_photo(photo) else "refused"
+                if fingers:
+                    with DeviceConnection(device["ip"], device["port"]) as conn:
+                        users = zk_ops.users_by_id(conn)
+                        if uid not in users:
+                            r["fingerprints"] = "would copy after adding" if job["dry_run"] else "user not on this device"
+                        elif zk_ops.user_fingerprints(conn, users[uid]):
+                            r["fingerprints"] = "already there"
+                        elif job["dry_run"]:
+                            r["fingerprints"] = f"would copy {len(fingers)}"
+                        else:
+                            conn.save_user_template(users[uid], fingers)
+                            r["fingerprints"] = f"copied {len(fingers)}"
+            except Exception as e:
+                r["error"] = str(e)
+            result[device["name"]] = r
+        return result
+
+    def _report_user(self, targets, uid):
+        try:
+            report_devices(self.erp, targets, self.sdk_ok, self.conf["bio_workers"], only_users={uid})
+        except Exception as e:
+            log.warning("  could not report %s back: %s", uid, e)
+
+
+def _first(pattern, text):
+    m = re.search(pattern, text)
+    return m.group(1).strip() if m else None
+
+
+def _summary(what, result, dry_run):
+    parts = []
+    for device, r in result.items():
+        if r.get("error"):
+            parts.append(f"{device}: failed ({r['error']})")
+            continue
+        bits = [f"{k} {v}" for k, v in r.items() if k in ("user", "would", "skipped", "face", "photo", "fingerprints")]
+        parts.append(f"{device}: {', '.join(bits) or 'nothing to do'}")
+    prefix = "[DRY RUN] " if dry_run else ""
+    return f"{prefix}{what} — " + "; ".join(parts)
+
+
+def single_instance():
+    """Two agents on one PC would claim jobs from each other's hands."""
+    handle = open(os.path.join(LOG_DIR, "zk_agent.lock"), "a+")
+    try:
+        if sys.platform.startswith("win"):
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        sys.exit("Another zk_agent is already running on this computer.")
+    return handle
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--once", action="store_true", help="Run at most one job, then exit")
+    parser.add_argument("--refresh", action="store_true", help="Read every enabled device into ERPNext, then exit")
+    args = parser.parse_args()
+
+    setup_logging()
+    _lock = single_instance()  # noqa: F841 — held for the life of the process
+    agent = Agent(load_config())
+    cfg = agent.heartbeat()
+    log.info(
+        "Agent %s %s connected to %s; %d device(s); faces/photos %s",
+        agent.conf["name"],
+        VERSION,
+        agent.conf["url"],
+        len(cfg.get("devices") or []),
+        "on" if agent.sdk_ok else f"off ({agent.sdk_why})",
+    )
+    if args.refresh:
+        report_devices(agent.erp, cfg.get("devices") or [], agent.sdk_ok, agent.conf["bio_workers"])
+        return
+    if args.once:
+        agent.run_one()
+        return
+    agent.run_forever()
+
+
+if __name__ == "__main__":
+    main()

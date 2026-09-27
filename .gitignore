@@ -1,0 +1,10 @@
+# The agent's own settings hold an ERPNext API secret that can add and remove
+# people from every door. It stays on the office PC.
+agent/config.ini
+agent/logs/
+
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/

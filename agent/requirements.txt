@@ -1,0 +1,4 @@
+pyzk>=0.9
+requests>=2.28
+# Faces and photos, through the ZKTeco Standalone SDK. Windows only.
+pywin32>=306; sys_platform == "win32"

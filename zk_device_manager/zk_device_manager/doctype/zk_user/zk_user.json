@@ -1,0 +1,205 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-09-27 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "user_id",
+  "user_name",
+  "status",
+  "column_break_person",
+  "employee",
+  "employee_name",
+  "privilege",
+  "card_number",
+  "section_break_presence",
+  "devices_on",
+  "devices_with_face",
+  "column_break_presence",
+  "devices_with_fingerprint",
+  "devices_with_photo",
+  "last_reported"
+ ],
+ "fields": [
+  {
+   "fieldname": "user_id",
+   "fieldtype": "Data",
+   "label": "User ID",
+   "reqd": 1,
+   "unique": 1,
+   "in_list_view": 1,
+   "set_only_once": 1,
+   "description": "The ID they punch in with. The same as their Employee's Attendance Device ID."
+  },
+  {
+   "fieldname": "user_name",
+   "fieldtype": "Data",
+   "label": "Name on Device",
+   "reqd": 1,
+   "in_list_view": 1,
+   "description": "What the device shows. Devices keep a short name; a long one is cut."
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Active\nLeft",
+   "default": "Active",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "Left: kept for the record. Removing them from devices is a separate, confirmed step."
+  },
+  {
+   "fieldname": "column_break_person",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "employee",
+   "fieldtype": "Link",
+   "label": "Employee",
+   "options": "Employee",
+   "in_standard_filter": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "employee_name",
+   "fieldtype": "Data",
+   "label": "Employee Name",
+   "fetch_from": "employee.employee_name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "privilege",
+   "fieldtype": "Select",
+   "label": "Privilege",
+   "options": "User\nAdmin",
+   "default": "User",
+   "description": "Admin can open the device menu."
+  },
+  {
+   "fieldname": "card_number",
+   "fieldtype": "Data",
+   "label": "Card Number"
+  },
+  {
+   "fieldname": "section_break_presence",
+   "fieldtype": "Section Break",
+   "label": "On the devices"
+  },
+  {
+   "fieldname": "devices_on",
+   "fieldtype": "Int",
+   "label": "On Devices",
+   "read_only": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "devices_with_face",
+   "fieldtype": "Int",
+   "label": "Devices With Face",
+   "read_only": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "column_break_presence",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "devices_with_fingerprint",
+   "fieldtype": "Int",
+   "label": "Devices With Fingerprint",
+   "read_only": 1
+  },
+  {
+   "fieldname": "devices_with_photo",
+   "fieldtype": "Int",
+   "label": "Devices With Photo",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_reported",
+   "fieldtype": "Datetime",
+   "label": "Last Reported",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [
+  {
+   "link_doctype": "ZK Device User",
+   "link_fieldname": "zk_user",
+   "group": "Devices"
+  },
+  {
+   "link_doctype": "ZK Job",
+   "link_fieldname": "zk_user",
+   "group": "Jobs"
+  }
+ ],
+ "modified": "2026-09-27 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "ZK Device Manager",
+ "name": "ZK User",
+ "owner": "Administrator",
+ "states": [],
+ "track_changes": 0,
+ "autoname": "field:user_id",
+ "naming_rule": "By fieldname",
+ "title_field": "user_name",
+ "show_title_field_in_link": 1,
+ "search_fields": "user_name,employee,employee_name",
+ "description": "One person as the devices know them, by the ID they punch in with.",
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "report": 1,
+   "export": 1,
+   "email": 0,
+   "print": 0,
+   "share": 0
+  },
+  {
+   "role": "ZK Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "report": 1,
+   "export": 0,
+   "email": 0,
+   "print": 0,
+   "share": 0
+  },
+  {
+   "role": "ZK Agent",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 0,
+   "report": 1,
+   "export": 0,
+   "email": 0,
+   "print": 0,
+   "share": 0
+  },
+  {
+   "role": "HR Manager",
+   "read": 1,
+   "write": 0,
+   "create": 0,
+   "delete": 0,
+   "report": 1,
+   "export": 0,
+   "email": 0,
+   "print": 0,
+   "share": 0
+  }
+ ],
+ "sort_field": "user_id",
+ "sort_order": "ASC"
+}

@@ -1,0 +1,180 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-09-27 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "device",
+  "user_id",
+  "zk_user",
+  "user_name",
+  "column_break_bio",
+  "has_face",
+  "fingerprints",
+  "has_photo",
+  "column_break_meta",
+  "privilege",
+  "card_number",
+  "device_uid",
+  "last_seen"
+ ],
+ "fields": [
+  {
+   "fieldname": "device",
+   "fieldtype": "Link",
+   "label": "Device",
+   "options": "ZK Device",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "user_id",
+   "fieldtype": "Data",
+   "label": "User ID",
+   "reqd": 1,
+   "in_list_view": 1,
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "zk_user",
+   "fieldtype": "Link",
+   "label": "ZK User",
+   "options": "ZK User",
+   "in_standard_filter": 1,
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "user_name",
+   "fieldtype": "Data",
+   "label": "Name on Device",
+   "read_only": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "column_break_bio",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "has_face",
+   "fieldtype": "Check",
+   "label": "Face",
+   "read_only": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "fingerprints",
+   "fieldtype": "Int",
+   "label": "Fingerprints",
+   "read_only": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "has_photo",
+   "fieldtype": "Check",
+   "label": "Photo",
+   "read_only": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "column_break_meta",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "privilege",
+   "fieldtype": "Data",
+   "label": "Privilege",
+   "read_only": 1
+  },
+  {
+   "fieldname": "card_number",
+   "fieldtype": "Data",
+   "label": "Card Number",
+   "read_only": 1
+  },
+  {
+   "fieldname": "device_uid",
+   "fieldtype": "Int",
+   "label": "Slot on Device",
+   "read_only": 1,
+   "description": "The device's own internal number for this user."
+  },
+  {
+   "fieldname": "last_seen",
+   "fieldtype": "Datetime",
+   "label": "Last Seen",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-09-27 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "ZK Device Manager",
+ "name": "ZK Device User",
+ "owner": "Administrator",
+ "states": [],
+ "track_changes": 0,
+ "autoname": "format:{device}::{user_id}",
+ "naming_rule": "Expression",
+ "description": "What one device holds for one user, as the agent last read it. Written only by the agent.",
+ "in_create": 1,
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "report": 1,
+   "export": 1,
+   "email": 0,
+   "print": 0,
+   "share": 0
+  },
+  {
+   "role": "ZK Manager",
+   "read": 1,
+   "write": 0,
+   "create": 0,
+   "delete": 0,
+   "report": 1,
+   "export": 0,
+   "email": 0,
+   "print": 0,
+   "share": 0
+  },
+  {
+   "role": "ZK Agent",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "report": 1,
+   "export": 0,
+   "email": 0,
+   "print": 0,
+   "share": 0
+  },
+  {
+   "role": "HR Manager",
+   "read": 1,
+   "write": 0,
+   "create": 0,
+   "delete": 0,
+   "report": 1,
+   "export": 0,
+   "email": 0,
+   "print": 0,
+   "share": 0
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC"
+}

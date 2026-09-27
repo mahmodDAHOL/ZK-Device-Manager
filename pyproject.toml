@@ -1,0 +1,19 @@
+[project]
+name = "zk_device_manager"
+authors = [{ name = "erpnext_mobile" }]
+description = "Manage the users, faces, fingerprints and photos on ZKTeco attendance devices from ERPNext"
+requires-python = ">=3.10"
+readme = "README.md"
+dynamic = ["version"]
+
+# Deliberately empty: the site never talks to a device. Everything that does —
+# pyzk, the ZKTeco SDK — belongs to the agent in agent/, which runs on a PC on
+# the devices' own network and is not installed into the bench.
+dependencies = []
+
+[build-system]
+requires = ["flit_core >=3.4,<4"]
+build-backend = "flit_core.buildapi"
+
+[tool.bench.frappe-dependencies]
+frappe = ">=15.0.0,<17.0.0"

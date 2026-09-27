@@ -1,0 +1,35 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-09-27 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "device"
+ ],
+ "fields": [
+  {
+   "fieldname": "device",
+   "fieldtype": "Link",
+   "label": "Device",
+   "options": "ZK Device",
+   "reqd": 1,
+   "in_list_view": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-09-27 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "ZK Device Manager",
+ "name": "ZK Job Device",
+ "owner": "Administrator",
+ "states": [],
+ "track_changes": 0,
+ "istable": 1,
+ "editable_grid": 1,
+ "description": "One device a ZK Job applies to.",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC"
+}

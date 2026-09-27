@@ -1,0 +1,167 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-09-27 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "auto_sync",
+  "sync_interval_minutes",
+  "sync_copy_faces",
+  "sync_copy_photos",
+  "refresh_after_sync",
+  "column_break_jobs",
+  "poll_seconds",
+  "stuck_job_minutes",
+  "last_scheduled_sync",
+  "section_break_agent",
+  "agent_host",
+  "agent_version",
+  "column_break_agent",
+  "last_heartbeat",
+  "sdk_available"
+ ],
+ "fields": [
+  {
+   "fieldname": "auto_sync",
+   "fieldtype": "Check",
+   "label": "Scheduled Sync",
+   "default": "0",
+   "description": "Queue a full sync of every enabled device on the interval below."
+  },
+  {
+   "fieldname": "sync_interval_minutes",
+   "fieldtype": "Int",
+   "label": "Every (minutes)",
+   "default": "120",
+   "depends_on": "auto_sync"
+  },
+  {
+   "fieldname": "sync_copy_faces",
+   "fieldtype": "Check",
+   "label": "Copy Faces in Sync",
+   "default": "1"
+  },
+  {
+   "fieldname": "sync_copy_photos",
+   "fieldtype": "Check",
+   "label": "Copy Photos in Sync",
+   "default": "1"
+  },
+  {
+   "fieldname": "refresh_after_sync",
+   "fieldtype": "Check",
+   "label": "Refresh Device State After Sync",
+   "default": "1",
+   "description": "Re-read who has what on every device after a sync, so ZK Device User is current. Adds a few minutes."
+  },
+  {
+   "fieldname": "column_break_jobs",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "poll_seconds",
+   "fieldtype": "Int",
+   "label": "Agent Checks Every (seconds)",
+   "default": "30",
+   "description": "How often the agent asks for new jobs."
+  },
+  {
+   "fieldname": "stuck_job_minutes",
+   "fieldtype": "Int",
+   "label": "Fail Jobs Running Longer Than (minutes)",
+   "default": "240"
+  },
+  {
+   "fieldname": "last_scheduled_sync",
+   "fieldtype": "Datetime",
+   "label": "Last Scheduled Sync Queued",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_agent",
+   "fieldtype": "Section Break",
+   "label": "Agent"
+  },
+  {
+   "fieldname": "agent_host",
+   "fieldtype": "Data",
+   "label": "Agent Computer",
+   "read_only": 1
+  },
+  {
+   "fieldname": "agent_version",
+   "fieldtype": "Data",
+   "label": "Agent Version",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_agent",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "last_heartbeat",
+   "fieldtype": "Datetime",
+   "label": "Agent Last Seen",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sdk_available",
+   "fieldtype": "Check",
+   "label": "Faces/Photos Available",
+   "read_only": 1,
+   "description": "Whether the agent's computer has the ZKTeco SDK. Without it, users are still managed but faces and photos are not."
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-09-27 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "ZK Device Manager",
+ "name": "ZK Settings",
+ "owner": "Administrator",
+ "states": [],
+ "track_changes": 0,
+ "issingle": 1,
+ "description": "How the scheduled sync runs, and whether the agent on the office network is alive.",
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "report": 1,
+   "export": 1,
+   "email": 0,
+   "print": 0,
+   "share": 0
+  },
+  {
+   "role": "ZK Manager",
+   "read": 1,
+   "write": 1,
+   "create": 0,
+   "delete": 0,
+   "report": 1,
+   "export": 0,
+   "email": 0,
+   "print": 0,
+   "share": 0
+  },
+  {
+   "role": "ZK Agent",
+   "read": 1,
+   "write": 1,
+   "create": 0,
+   "delete": 0,
+   "report": 1,
+   "export": 0,
+   "email": 0,
+   "print": 0,
+   "share": 0
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC"
+}

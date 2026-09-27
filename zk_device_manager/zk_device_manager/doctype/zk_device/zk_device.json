@@ -1,0 +1,281 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-09-27 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "device_name",
+  "ip_address",
+  "port",
+  "enabled",
+  "location",
+  "column_break_status",
+  "status",
+  "last_seen",
+  "last_error",
+  "section_break_info",
+  "model",
+  "serial_number",
+  "platform",
+  "column_break_info",
+  "firmware",
+  "face_algorithm",
+  "fingerprint_algorithm",
+  "section_break_counts",
+  "user_count",
+  "face_count",
+  "fingerprint_count",
+  "column_break_counts",
+  "photo_count",
+  "record_count",
+  "column_break_capacity",
+  "user_capacity",
+  "face_capacity",
+  "fingerprint_capacity"
+ ],
+ "fields": [
+  {
+   "fieldname": "device_name",
+   "fieldtype": "Data",
+   "label": "Device Name",
+   "reqd": 1,
+   "unique": 1,
+   "in_list_view": 1,
+   "description": "What people call it, e.g. Main Gate."
+  },
+  {
+   "fieldname": "ip_address",
+   "fieldtype": "Data",
+   "label": "IP Address",
+   "reqd": 1,
+   "unique": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "port",
+   "fieldtype": "Int",
+   "label": "Port",
+   "default": "4370"
+  },
+  {
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "label": "Enabled",
+   "default": "1",
+   "description": "Cleared: the agent leaves this device alone — no sync, no jobs."
+  },
+  {
+   "fieldname": "location",
+   "fieldtype": "Data",
+   "label": "Location"
+  },
+  {
+   "fieldname": "column_break_status",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Unknown\nOnline\nOffline",
+   "default": "Unknown",
+   "read_only": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "last_seen",
+   "fieldtype": "Datetime",
+   "label": "Last Seen",
+   "read_only": 1,
+   "in_list_view": 1,
+   "description": "The last time the agent reached it."
+  },
+  {
+   "fieldname": "last_error",
+   "fieldtype": "Small Text",
+   "label": "Last Error",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_info",
+   "fieldtype": "Section Break",
+   "label": "Device",
+   "collapsible": 1
+  },
+  {
+   "fieldname": "model",
+   "fieldtype": "Data",
+   "label": "Model",
+   "read_only": 1
+  },
+  {
+   "fieldname": "serial_number",
+   "fieldtype": "Data",
+   "label": "Serial Number",
+   "read_only": 1
+  },
+  {
+   "fieldname": "platform",
+   "fieldtype": "Data",
+   "label": "Platform",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_info",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "firmware",
+   "fieldtype": "Data",
+   "label": "Firmware",
+   "read_only": 1
+  },
+  {
+   "fieldname": "face_algorithm",
+   "fieldtype": "Data",
+   "label": "Face Algorithm",
+   "read_only": 1
+  },
+  {
+   "fieldname": "fingerprint_algorithm",
+   "fieldtype": "Data",
+   "label": "Fingerprint Algorithm",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_counts",
+   "fieldtype": "Section Break",
+   "label": "Stored on the device"
+  },
+  {
+   "fieldname": "user_count",
+   "fieldtype": "Int",
+   "label": "Users",
+   "read_only": 1
+  },
+  {
+   "fieldname": "face_count",
+   "fieldtype": "Int",
+   "label": "Faces",
+   "read_only": 1
+  },
+  {
+   "fieldname": "fingerprint_count",
+   "fieldtype": "Int",
+   "label": "Fingerprints",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_counts",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "photo_count",
+   "fieldtype": "Int",
+   "label": "User Photos",
+   "read_only": 1
+  },
+  {
+   "fieldname": "record_count",
+   "fieldtype": "Int",
+   "label": "Attendance Records",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_capacity",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "user_capacity",
+   "fieldtype": "Int",
+   "label": "User Capacity",
+   "read_only": 1
+  },
+  {
+   "fieldname": "face_capacity",
+   "fieldtype": "Int",
+   "label": "Face Capacity",
+   "read_only": 1
+  },
+  {
+   "fieldname": "fingerprint_capacity",
+   "fieldtype": "Int",
+   "label": "Fingerprint Capacity",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [
+  {
+   "link_doctype": "ZK Device User",
+   "link_fieldname": "device",
+   "group": "Users"
+  }
+ ],
+ "modified": "2026-09-27 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "ZK Device Manager",
+ "name": "ZK Device",
+ "owner": "Administrator",
+ "states": [],
+ "track_changes": 0,
+ "autoname": "field:device_name",
+ "naming_rule": "By fieldname",
+ "title_field": "device_name",
+ "description": "One ZKTeco attendance device. Its details and counts are written by the agent each time it reads the device.",
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "report": 1,
+   "export": 1,
+   "email": 0,
+   "print": 0,
+   "share": 0
+  },
+  {
+   "role": "ZK Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "report": 1,
+   "export": 0,
+   "email": 0,
+   "print": 0,
+   "share": 0
+  },
+  {
+   "role": "ZK Agent",
+   "read": 1,
+   "write": 1,
+   "create": 0,
+   "delete": 0,
+   "report": 1,
+   "export": 0,
+   "email": 0,
+   "print": 0,
+   "share": 0
+  },
+  {
+   "role": "HR Manager",
+   "read": 1,
+   "write": 0,
+   "create": 0,
+   "delete": 0,
+   "report": 1,
+   "export": 0,
+   "email": 0,
+   "print": 0,
+   "share": 0
+  }
+ ],
+ "sort_field": "device_name",
+ "sort_order": "ASC"
+}
