@@ -44,7 +44,7 @@ async function zk_device_options(checked = [], exclude = []) {
 
 function zk_queue(args, done_message) {
 	return frappe
-		.call("zk_device_manager.api.queue_job", { ...args, dry_run: 0 })
+		.call("zk_device_manager.api.queue_job", args)
 		.then((r) => {
 			frappe.show_alert({ message: done_message || __("Queued as {0}", [r.message]), indicator: "green" });
 			return r.message;

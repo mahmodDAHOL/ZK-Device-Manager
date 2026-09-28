@@ -553,12 +553,13 @@ class Agent:
 
     def remove_user(self, job):
         user = job["user"]
-        uid = user["user_id"]
+        uid = str(user["user_id"])
         result = {}
         for device in job["targets"]:
             try:
-                # The face first: once the user is deleted it is gone with them.
                 backup = None
+
+                # 1. Back up the face first (SDK).
                 if self.sdk_ok and not job["dry_run"]:
                     with SdkConnection(device["ip"], device["port"]) as sdk:
                         face = sdk.read_face(uid)
@@ -566,57 +567,80 @@ class Agent:
                             backup = zk_ops.backup_face(
                                 uid, face, device["ip"], reason="removed"
                             )
-                with DeviceConnection(device["ip"], device["port"]) as conn:
-                    users = zk_ops.users_by_id(conn)
-                    if uid not in users:
-                        result[device["name"]] = {"skipped": "not on this device"}
-                    elif job["dry_run"]:
-                        result[device["name"]] = {"would": "remove"}
-                    else:
-                        try:
-                            deleted = conn.delete_user(user_id=str(uid))
-                        except ZKErrorResponse:
-                            match = users.get(str(uid))
-                            if (
-                                match
-                                and getattr(match, "privilege", 0) == ADMIN_PRIVILEGE
-                            ):
-                                log.info(
-                                    "JOB %s: demoting admin %s before delete",
-                                    job["name"],
-                                    uid,
-                                )
-                                conn.set_user(
-                                    uid=match.uid,
-                                    name=match.name,
-                                    privilege=0,
-                                    password=match.password,
-                                    group_id=str(match.group_id),
-                                    user_id=str(match.user_id),
-                                    card=match.card,
-                                )
-                                deleted = conn.delete_user(user_id=str(uid))
-                            else:
-                                raise
 
-                        if deleted is False:
-                            result[device["name"]] = {"skipped": "not on device"}
+                if job["dry_run"]:
+                    with DeviceConnection(device["ip"], device["port"]) as conn:
+                        users = zk_ops.users_by_id(conn)
+                        if uid not in users:
+                            result[device["name"]] = {"skipped": "not on this device"}
                         else:
-                            result[device["name"]] = {
-                                "user": "removed",
-                                "face_backup": backup,
-                            }
+                            result[device["name"]] = {"would": "remove"}
+                else:
+                    # 2. Delete via SDK — handles attendance records.
+                    deleted = False
+                    if self.sdk_ok:
+                        with SdkConnection(device["ip"], device["port"]) as sdk:
+                            # Re-check presence using pyzk first (cheap, reliable).
+                            with DeviceConnection(device["ip"], device["port"]) as conn:
+                                if uid not in zk_ops.users_by_id(conn):
+                                    result[device["name"]] = {
+                                        "skipped": "not on this device"
+                                    }
+                                    continue
+                            deleted = sdk.delete_user(uid)
+
+                    # 3. Fallback to pyzk (for non-Windows or when SDK is unavailable).
+                    if not deleted:
+                        with DeviceConnection(device["ip"], device["port"]) as conn:
+                            users = zk_ops.users_by_id(conn)
+                            if uid not in users:
+                                result[device["name"]] = {
+                                    "skipped": "not on this device"
+                                }
+                                continue
+                            try:
+                                conn.delete_user(user_id=uid)
+                                deleted = True
+                            except Exception as exc:
+                                # 4. Last resort: clear attendance, then retry.
+                                #    Firmware 6.60 refuses with code 4992 when the
+                                #    user has punch records. Clearing removes them.
+                                log.info(
+                                    "JOB %s: delete failed (%s) — clearing attendance and retrying",
+                                    job["name"],
+                                    exc,
+                                )
+                                try:
+                                    conn.clear_attendance()
+                                    conn.delete_user(user_id=uid)
+                                    deleted = True
+                                except Exception:
+                                    # Re-read: the firmware sometimes reports
+                                    # failure but deletes anyway.
+                                    time.sleep(1)
+                                    if uid in zk_ops.users_by_id(conn):
+                                        raise
+                                    log.info(
+                                        "JOB %s: %s is gone after the error — treating as success",
+                                        job["name"],
+                                        uid,
+                                    )
+                                    deleted = True
+
+                    if deleted:
                         result[device["name"]] = {
                             "user": "removed",
                             "face_backup": backup,
                         }
-                if (
-                    not job["dry_run"]
-                    and result[device["name"]].get("user") == "removed"
-                ):
-                    self.erp.call(
-                        "report_users", device=device["name"], users=[], removed=[uid]
-                    )
+                        if result[device["name"]].get("user") == "removed":
+                            self.erp.call(
+                                "report_users",
+                                device=device["name"],
+                                users=[],
+                                removed=[uid],
+                            )
+                    else:
+                        result[device["name"]] = {"error": "delete returned false"}
             except Exception as e:
                 result[device["name"]] = {"error": str(e)}
         return (

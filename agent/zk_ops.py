@@ -41,6 +41,7 @@ ADMIN_PRIVILEGE = 14
 
 # ---------------- pyzk ----------------
 
+
 class DeviceConnection:
     """A pyzk connection with the device disabled while it is held, so nobody
     punches in half-way through a write."""
@@ -54,13 +55,18 @@ class DeviceConnection:
         for attempt in range(1, RETRIES + 1):
             try:
                 self.conn = ZK(
-                    self.ip, port=self.port, timeout=self.timeout, password=self.password
+                    self.ip,
+                    port=self.port,
+                    timeout=self.timeout,
+                    password=self.password,
                 ).connect()
                 self.conn.disable_device()
                 return self.conn
             except Exception as e:  # pyzk raises bare Exceptions
                 last = e
-                log.warning("connect %s attempt %d/%d: %s", self.ip, attempt, RETRIES, e)
+                log.warning(
+                    "connect %s attempt %d/%d: %s", self.ip, attempt, RETRIES, e
+                )
                 time.sleep(attempt)
         raise ConnectionError(f"Cannot connect to {self.ip}:{self.port}: {last}")
 
@@ -139,7 +145,11 @@ def put_user(conn, users, fields):
         name=(fields.get("user_name") or uid),
         privilege=int(fields.get("privilege") or 0),
         user_id=uid,
-        card=int(fields.get("card_number") or 0) if str(fields.get("card_number") or "0").isdigit() else 0,
+        card=(
+            int(fields.get("card_number") or 0)
+            if str(fields.get("card_number") or "0").isdigit()
+            else 0
+        ),
     )
     if current:
         conn.set_user(
@@ -177,6 +187,7 @@ def attendance_json(records):
 
 
 # ---------------- ZKTeco SDK ----------------
+
 
 def sdk_available():
     """(True, None) when faces and photos can be handled here, else (False, why)."""
@@ -217,7 +228,9 @@ class SdkConnection:
             if self.sdk.Connect_Net(self.ip, self.port):
                 self.sdk.EnableDevice(SDK_MACHINE, False)
                 return self
-            log.warning("sdk connect %s attempt %d/%d failed", self.ip, attempt, RETRIES)
+            log.warning(
+                "sdk connect %s attempt %d/%d failed", self.ip, attempt, RETRIES
+            )
             time.sleep(attempt)
         self._release()
         raise ConnectionError(f"SDK cannot connect to {self.ip}:{self.port}")
@@ -253,15 +266,109 @@ class SdkConnection:
 
     def read_face(self, user_id):
         """(template, length) for the user's faces, or None when they have none."""
-        got = _safe(lambda: self.sdk.GetUserFaceStr(SDK_MACHINE, str(user_id), FACE_INDEX, "", 0))
+        got = _safe(
+            lambda: self.sdk.GetUserFaceStr(
+                SDK_MACHINE, str(user_id), FACE_INDEX, "", 0
+            )
+        )
         # pywin32 answers (result, template, length) for the by-ref arguments.
         if not got or not got[0] or not got[1] or not got[-1]:
             return None
         return got[1], int(got[-1])
 
+    def delete_user(self, user_id):
+        """Delete a user and their attendance logs.
+
+        Firmware 6.60 refuses SSR_DeleteEnrollData(user, 12) with -4992 when
+        the user has attendance records. Delete the attendance first.
+        """
+        user_id = str(user_id)
+
+        # 1. Delete attendance records for this user.
+        log.info("sdk delete_user: clearing attendance for %s", user_id)
+        att_ok = False
+        try:
+            for fn_name in ("SSR_DeleteAttLog", "DeleteAttLog", "SSR_DeleteAttLogByUser"):
+                fn = getattr(self.sdk, fn_name, None)
+                if fn is None:
+                    continue
+                try:
+                    r = fn(SDK_MACHINE, user_id)
+                    if r == 1:
+                        att_ok = True
+                        log.info("sdk delete_user: attendance cleared via %s", fn_name)
+                        break
+                except Exception as e:
+                    log.info("sdk delete_user: %s raised %s", fn_name, e)
+        except Exception as e:
+            log.warning("sdk delete_user: attendance clear failed: %s", e)
+
+        if not att_ok:
+            log.info("sdk delete_user: trying bulk attendance clear")
+            for fn_name in ("ClearAttendanceLog", "ClearKeeperData", "ClearData"):
+                fn = getattr(self.sdk, fn_name, None)
+                if fn is None:
+                    continue
+                try:
+                    r = fn(SDK_MACHINE, 5) if fn_name == "ClearData" else fn(SDK_MACHINE)
+                    if r == 1:
+                        att_ok = True
+                        log.info("sdk delete_user: cleared all attendance via %s", fn_name)
+                        break
+                except Exception as e:
+                    log.info("sdk delete_user: %s raised %s", fn_name, e)
+
+        # 2. Delete the user.
+        log.info("sdk delete_user: deleting user %s", user_id)
+        # 2. Delete the user.
+        log.info("sdk delete_user: deleting user %s", user_id)
+        try:
+            recv = self.sdk.SSR_DeleteEnrollData(SDK_MACHINE, user_id, 12)
+        except Exception as e:
+            log.warning("sdk delete_user(%s) raised: %s", user_id, e)
+            recv = None
+
+        if recv == 1:
+            return True
+
+        # recv may be False (COM VARIANT_BOOL) even when the delete worked.
+        # GetLastError() == 0 means "no error occurred" — i.e. success.
+        try:
+            err = self.sdk.GetLastError()
+        except Exception:
+            err = None
+
+        log.info("sdk delete_user(%s): recv=%r GetLastError=%r", user_id, recv, err)
+
+        if err == 0:
+            # No error reported — trust the device, not the falsy return.
+            return True
+
+        # Real failure: -4992 (still attendance-locked) or other codes
+        if err == -4992:
+            log.info("sdk delete_user: retrying with flag=13 after attendance clear")
+            try:
+                recv = self.sdk.SSR_DeleteEnrollData(SDK_MACHINE, user_id, 13)
+                if recv == 1:
+                    return True
+                err2 = self.sdk.GetLastError()
+                if err2 == 0:
+                    return True
+            except Exception:
+                pass
+
+        return False
+
     def write_face(self, user_id, face):
         template, length = face
-        return bool(_safe(lambda: self.sdk.SetUserFaceStr(SDK_MACHINE, str(user_id), FACE_INDEX, template, length), False))
+        return bool(
+            _safe(
+                lambda: self.sdk.SetUserFaceStr(
+                    SDK_MACHINE, str(user_id), FACE_INDEX, template, length
+                ),
+                False,
+            )
+        )
 
     def download_photo(self, user_id, folder):
         """Saves the user's photo into folder as <user_id>.jpg; answers its path or None."""
@@ -269,7 +376,11 @@ class SdkConnection:
         path = os.path.join(folder, f"{user_id}.jpg")
         if os.path.exists(path):
             os.remove(path)
-        _safe(lambda: self.sdk.DownloadUserPhoto(SDK_MACHINE, f"{user_id}.jpg", folder + os.sep))
+        _safe(
+            lambda: self.sdk.DownloadUserPhoto(
+                SDK_MACHINE, f"{user_id}.jpg", folder + os.sep
+            )
+        )
         return path if os.path.exists(path) and os.path.getsize(path) > 0 else None
 
     def upload_photo(self, path):
