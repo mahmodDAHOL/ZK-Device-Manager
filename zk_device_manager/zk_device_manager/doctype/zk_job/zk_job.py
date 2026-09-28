@@ -18,7 +18,10 @@ class ZKJob(Document):
 	def before_insert(self):
 		self.requested_by = frappe.session.user
 		self.status = "Queued"
-		for field in ("claimed_by", "started_at", "finished_at", "summary", "error", "result", "sync_log"):
+		for field in (
+			"claimed_by", "started_at", "finished_at", "summary", "error", "result", "sync_log",
+			"progress", "progress_message", "estimated_finish", "remaining_seconds",
+		):
 			self.set(field, None)
 
 	def validate(self):

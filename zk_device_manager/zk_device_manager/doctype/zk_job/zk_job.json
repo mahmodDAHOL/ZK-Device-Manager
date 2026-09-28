@@ -26,6 +26,12 @@
   "started_at",
   "finished_at",
   "summary",
+  "section_break_progress",
+  "progress",
+  "progress_message",
+  "column_break_progress",
+  "estimated_finish",
+  "remaining_seconds",
   "section_break_detail",
   "error",
   "result"
@@ -168,6 +174,44 @@
    "in_list_view": 1
   },
   {
+   "fieldname": "section_break_progress",
+   "fieldtype": "Section Break",
+   "label": "Progress",
+   "depends_on": "eval:doc.status!='Queued'"
+  },
+  {
+   "fieldname": "progress",
+   "fieldtype": "Percent",
+   "label": "Progress",
+   "read_only": 1,
+   "in_list_view": 1,
+   "description": "How far the agent has got, as it reports it every few seconds."
+  },
+  {
+   "fieldname": "progress_message",
+   "fieldtype": "Data",
+   "label": "Doing Now",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_progress",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "estimated_finish",
+   "fieldtype": "Datetime",
+   "label": "Estimated Finish",
+   "read_only": 1,
+   "description": "From how fast it has gone so far, weighed with how long the same job took before."
+  },
+  {
+   "fieldname": "remaining_seconds",
+   "fieldtype": "Int",
+   "label": "Seconds Left",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
    "fieldname": "section_break_detail",
    "fieldtype": "Section Break",
    "label": "Detail",
@@ -189,7 +233,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-09-27 00:00:00.000000",
+ "modified": "2026-09-28 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "ZK Device Manager",
  "name": "ZK Job",

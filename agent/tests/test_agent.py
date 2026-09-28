@@ -134,6 +134,16 @@ class FakeSdk:
         self.d["photos"][uid] = open(path, "rb").read()
         return True
 
+    def delete_user(self, user_id):
+        # What SSR_DeleteEnrollData does for a user without punch records.
+        user_id = str(user_id)
+        if user_id not in self.d["users"]:
+            return False
+        self.d["users"].pop(user_id)
+        self.d["faces"].pop(user_id, None)
+        self.d["fps"].pop(user_id, None)
+        return True
+
 
 zk_agent.DeviceConnection = FakeConn
 zk_agent.SdkConnection = FakeSdk
@@ -336,8 +346,10 @@ check("A: same field as the old script", field == "attach_ministry_of_informatio
 check("A: same file name as the old script", up_a[0]["file_name"] == fname)
 check("A: byte-identical JSON", up_a[0]["content"] == content)
 check("A: the previous file was replaced", "OLD" not in a.erp.files)
-check("B: empty device skipped, others still uploaded", not [f for f in a.erp.files.values() if "_3_" in f["file_name"]]
-      and any("_4_" in f["file_name"] for f in a.erp.files.values()))
+# By upload field, not file name: "..._10_0_0_3_..." holds "_3_" too.
+fields = {f["field"][2] for f in a.erp.files.values()}
+check("B: empty device skipped, others still uploaded", "attach_ministry_of_information_3_data" not in fields
+      and "attach_ministry_of_information_4_data" in fields)
 check("device without a slot skipped", "no attendance slot" in str(_json.loads(_json.dumps(a.erp.finished[-1]["result"]))["N"]))
 check("job Done", a.erp.finished[-1]["status"] == "Done")
 print("   ", a.erp.finished[-1]["summary"])
@@ -349,13 +361,69 @@ a.erp.queue = [job("Fetch Attendance", [SA, SC], user=None, attendance=ATT)]
 a.run_one()
 check("failed upload keeps the previous file", "OLD" in a.erp.files)
 check("failed device reported, the other still uploaded", "failed: A" in a.erp.finished[-1]["summary"]
-      and any("_4_" in f["file_name"] for f in a.erp.files.values()))
+      and any(f["field"][2] == "attach_ministry_of_information_4_data" for f in a.erp.files.values()))
 
 # 12. Dry run uploads nothing.
 reset(); a = agent(); a.erp = FileERP()
 a.erp.queue = [job("Fetch Attendance", [SA], user=None, attendance=ATT, dry_run=1)]
 a.run_one()
 check("dry-run attendance uploads nothing", a.erp.files == {})
+
+# 13. Progress: every job reports it, only forwards, and not on every user.
+zk_agent.Progress.INTERVAL = 0  # send every update, so the test sees them all
+reset(); a = agent()
+a.erp.queue = [job("Refresh Device State", [A, B, C], user=None)]
+a.run_one()
+seen = [kw["progress"] for m, kw in a.erp.calls if m == "report_progress"]
+check("refresh reports progress", len(seen) > 3)
+check("progress only goes forward", seen == sorted(seen))
+check("progress reaches 100 before the job is closed", seen[-1] == 100.0)
+check("progress says what it is doing", any("Reading faces and photos on" in (kw.get("message") or "")
+                                            for m, kw in a.erp.calls if m == "report_progress"))
+
+reset(); a = agent()
+a.erp.queue = [job("Add User", [B, C])]
+a.run_one()
+msgs = [kw.get("message") for m, kw in a.erp.calls if m == "report_progress"]
+check("add user moves through its phases", any(m and m.startswith("Adding to") for m in msgs)
+      and any(m and m.startswith("Looking for the face on") for m in msgs)
+      and any(m and m.startswith("Copying to") for m in msgs))
+
+zk_agent.Progress.INTERVAL = 5
+a = agent(); a.progress = zk_agent.Progress(a.erp, "ZKJ-T")
+for i in range(500):
+    a.progress.set(i / 500, "busy")
+check("reports are throttled (500 updates, 1 request)", sum(1 for m, _ in a.erp.calls if m == "report_progress") == 1)
+
+# 14. Following the full sync's own output: lines from the real run on 2026-09-27.
+class Recorder:
+    def __init__(self):
+        self.points = []
+
+    def update(self, key, fraction, message=None):
+        self.points.append((round(fraction, 3), message))
+
+
+IPS = ["192.168.67.22", "192.168.67.11", "192.168.67.12", "192.168.67.13",
+       "192.168.67.14", "192.168.67.15", "192.168.67.16"]
+rec = Recorder()
+sp = zk_agent.SyncProgress(rec, IPS, with_bio=True)
+log_lines = [f"09:31:34  INFO       {ip}: 478 users" for ip in IPS]
+log_lines += [f"09:31:35  INFO       {ip}: already complete" for ip in IPS]
+log_lines += [f"09:34:03  INFO       {ip}: 55 user photos, 55 faces" for ip in IPS]
+log_lines += ["09:50:27  INFO     Union: 474 users have a photo, 474 have a face on some device"]
+log_lines += [f"09:50:28  INFO       {ip}: would add 419 photos, 419 faces (e.g. users 1, 2)" for ip in IPS]
+log_lines += ["09:50:29  INFO     DONE — union=478 ..."]
+for line in log_lines:
+    sp.feed(line)
+fractions = [p for p, _ in rec.points]
+check("sync: one step per device per phase", len(rec.points) == 4 * len(IPS))
+check("sync: reading users is a small share", abs(fractions[len(IPS) - 1] - 7 / 182) < 0.001)
+check("sync: faces/photos read dominate", fractions[3 * len(IPS) - 1] - fractions[2 * len(IPS) - 1] > 0.7)
+check("sync: ends at 100%", fractions[-1] == 1.0)
+check("sync: photo 'already complete' is not a users step",
+      not zk_agent.SyncProgress.STEPS[1][1].search("  192.168.67.11: photos and faces already complete"))
+check("sync: message names the phase", rec.points[-1][1] == "Faces and photos written: 7 of 7 devices")
 
 shutil.rmtree(TMP, ignore_errors=True)
 print("ALL AGENT TESTS PASSED")

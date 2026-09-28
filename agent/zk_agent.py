@@ -21,6 +21,7 @@ import re
 import socket
 import subprocess
 import sys
+import threading
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -172,20 +173,136 @@ def _server_message(response):
     return response.text[:500]
 
 
+# ---------------- progress ----------------
+
+
+class Progress:
+    """Tells ERPNext how far the running job has got.
+
+    Thread-safe (a refresh reads four devices at once), and sends at most once
+    every INTERVAL seconds whatever the callers do, so reading 478 users does
+    not become 478 requests. ERPNext works out the time left from it.
+    """
+
+    INTERVAL = 5
+
+    def __init__(self, erp, job_name):
+        self.erp, self.job = erp, job_name
+        self.lock = threading.Lock()
+        self.fraction, self.message, self.sent_at = 0.0, "", 0.0
+
+    def set(self, fraction, message=None, force=False):
+        with self.lock:
+            self.fraction = max(self.fraction, min(max(fraction, 0.0), 1.0))
+            if message:
+                self.message = message
+            due = force or time.monotonic() - self.sent_at >= self.INTERVAL
+            if due:
+                self.sent_at = time.monotonic()
+            fraction, message = self.fraction, self.message
+        if due:
+            try:
+                self.erp.call("report_progress", job=self.job, progress=round(fraction * 100, 1), message=message)
+            except Exception as e:  # a lost progress report must never fail the job
+                log.debug("progress report failed: %s", e)
+
+    def span(self, lo, hi, parts=1):
+        return Span(self, lo, hi, parts)
+
+
+class Span:
+    """One share of a job — from `lo` to `hi` of the whole — made of `parts`
+    that finish on their own, in any order: the devices being read at once.
+    Each part reports its own 0..1; the span is their average."""
+
+    def __init__(self, progress, lo, hi, parts=1):
+        self.progress, self.lo, self.hi = progress, lo, hi
+        self.parts = max(parts, 1)
+        self.done = {}
+        self.lock = threading.Lock()
+
+    def update(self, key, fraction, message=None):
+        with self.lock:
+            self.done[key] = min(max(fraction, 0.0), 1.0)
+            share = sum(self.done.values()) / max(self.parts, len(self.done))
+        self.progress.set(self.lo + (self.hi - self.lo) * share, message)
+
+    def reporter(self, key):
+        """A (fraction, message) callback for one part."""
+        return lambda fraction, message=None: self.update(key, fraction, message)
+
+    def finish(self, message=None):
+        self.progress.set(self.hi, message, force=True)
+
+
+class NoProgress:
+    """What handlers get when nothing is listening, e.g. --refresh."""
+
+    def set(self, *a, **k):
+        pass
+
+    def span(self, lo, hi, parts=1):
+        return Span(self, lo, hi, parts)
+
+
+class SyncProgress:
+    """Follows zk_union_sync.py's own log lines while it runs.
+
+    Each device goes through four steps, weighted by how long they really
+    take: reading users and writing missing ones take seconds; reading every
+    user's face and photo one at a time takes minutes (about 20 times as long);
+    writing the missing faces and photos is in between. The script prints one
+    line as each device finishes each step, and that is what is counted.
+    """
+
+    STEPS = (
+        ("users read", re.compile(r"  (\S+): \d+ users$"), 1),
+        ("users written", re.compile(r"  (\S+)(?:: already complete$| done: added=| aborted:)"), 1),
+        ("faces and photos read", re.compile(r"  (\S+): (?:\d+ user photos, \d+ faces|photos/faces not read)"), 20),
+        ("faces and photos written", re.compile(
+            r"  (\S+)(?:: photos and faces already complete|: would add| done: photos added|: photos/faces not written)"), 4),
+    )
+
+    def __init__(self, span, ips, with_bio=True):
+        self.span, self.ips = span, set(ips)
+        self.steps = self.STEPS if with_bio else self.STEPS[:2]
+        self.weight = {label: w for label, _, w in self.steps}
+        self.total = sum(self.weight.values()) * max(len(ips), 1)
+        self.seen = set()  # (step, ip) pairs already counted
+
+    def feed(self, line):
+        line = line.rstrip("\r\n")
+        for label, pattern, _ in self.steps:
+            m = pattern.search(line)
+            if not m or m.group(1) not in self.ips or (label, m.group(1)) in self.seen:
+                continue
+            self.seen.add((label, m.group(1)))
+            done = sum(self.weight[step] for step, _ in self.seen)
+            count = sum(1 for step, _ in self.seen if step == label)
+            self.span.update("sync", done / self.total, f"{label.capitalize()}: {count} of {len(self.ips)} devices")
+            return
+
+
 # ---------------- reading devices into ERPNext ----------------
 
 
-def read_device_state(device, sdk_ok, only_users=None):
+def read_device_state(device, sdk_ok, only_users=None, report=None):
     """Everything one device holds, in the shape report_users takes.
 
     With `only_users`, only those users are read (after a job about one
     person); otherwise everyone (a refresh). Answers (info, entries).
+    `report(fraction, message)` is told how far this one device has got.
     """
+    report = report or (lambda *a, **k: None)
+    report(0.0, f"Reading users on {device['name']}")
     with DeviceConnection(device["ip"], device["port"]) as conn:
         info = zk_ops.read_info(conn)
         users = zk_ops.users_by_id(conn)
         fps = zk_ops.fingerprint_counts(conn, users)
     wanted = [u for u in users if only_users is None or u in only_users]
+    # Users and fingerprints come in one read; faces and photos are the slow
+    # part, one user at a time, so they are most of the bar.
+    report(0.05 if sdk_ok and wanted else 1.0, f"Read {len(users)} users on {device['name']}")
     entries = {
         uid: {
             "user_id": uid,
@@ -201,27 +318,35 @@ def read_device_state(device, sdk_ok, only_users=None):
         folder = zk_ops.device_photo_folder(device["ip"], "state")
         photos = 0
         with SdkConnection(device["ip"], device["port"]) as sdk:
-            for uid in wanted:
+            for n, uid in enumerate(wanted, 1):
                 entries[uid]["has_face"] = 1 if sdk.read_face(uid) else 0
                 path = sdk.download_photo(uid, folder)
                 entries[uid]["has_photo"] = 1 if path else 0
                 photos += 1 if path else 0
                 if path:
                     os.remove(path)
+                report(0.05 + 0.95 * n / len(wanted),
+                       f"Reading faces and photos on {device['name']}: {n} of {len(wanted)} users")
         if only_users is None:
             info["photo_count"] = photos
     return info, list(entries.values())
 
 
-def report_devices(erp, devices, sdk_ok, workers, only_users=None):
+def report_devices(erp, devices, sdk_ok, workers, only_users=None, span=None):
     """Reads each device (in parallel) and writes what it holds into ERPNext.
-    Answers {device: short outcome}."""
+    Answers {device: short outcome}. `span` is the share of the job's progress
+    bar this fills, one part per device."""
     outcome = {}
+    if span is not None:
+        span.parts = max(len(devices), 1)
 
     def one(device):
+        report = span.reporter(device["name"]) if span is not None else None
         try:
-            info, entries = read_device_state(device, sdk_ok, only_users)
+            info, entries = read_device_state(device, sdk_ok, only_users, report)
         except Exception as e:
+            if report:
+                report(1.0, f"{device['name']} unreachable")
             erp.call("report_device", device=device["name"], error=str(e))
             return device["name"], f"unreachable: {e}"
         erp.call("report_device", device=device["name"], info=info)
@@ -252,6 +377,7 @@ class Agent:
     def __init__(self, conf):
         self.conf = conf
         self.erp = ERPNext(conf)
+        self.progress = NoProgress()
         self.sdk_ok, self.sdk_why = zk_ops.sdk_available()
         if not self.sdk_ok:
             log.warning(
@@ -304,6 +430,7 @@ class Agent:
             "Remove User": self.remove_user,
             "Copy Biometrics": self.copy_biometrics,
         }.get(job["job_type"])
+        self.progress = Progress(self.erp, job["name"])
         try:
             if not handler:
                 raise JobFailed(f"This agent does not know how to do {job['job_type']}")
@@ -328,6 +455,7 @@ class Agent:
             summary, result, sync_log, status = f"Failed: {e}", None, None, "Failed"
             error = traceback.format_exc()
         log.info("JOB %s %s: %s", job["name"], status, summary)
+        self.progress = NoProgress()
         self.erp.call(
             "finish_job",
             job=job["name"],
@@ -341,10 +469,20 @@ class Agent:
 
     # -- handlers: each answers (summary, result, sync_log) --
 
+    def _each(self, devices, verb, lo=0.0, hi=1.0):
+        """The devices one after another, moving the progress bar from `lo` to
+        `hi` as each is reached and saying which one is being worked on."""
+        n = max(len(devices), 1)
+        for i, device in enumerate(devices):
+            self.progress.set(lo + (hi - lo) * i / n, f"{verb} {device['name']} ({i + 1} of {len(devices)})", force=True)
+            yield device
+        self.progress.set(hi)
+
     def refresh(self, job):
         targets = job["targets"]
         outcome = report_devices(
-            self.erp, targets, self.sdk_ok, self.conf["bio_workers"]
+            self.erp, targets, self.sdk_ok, self.conf["bio_workers"],
+            span=self.progress.span(0.0, 1.0),
         )
         bad = [d for d, t in outcome.items() if t.startswith("unreachable")]
         summary = f"Read {len(targets) - len(bad)} of {len(targets)} device(s)"
@@ -384,7 +522,7 @@ class Agent:
         os.makedirs(folder, exist_ok=True)
 
         result = {}
-        for device in job["targets"]:
+        for device in self._each(job["targets"], "Fetching attendance from"):
             slot = device.get("attendance_slot")
             if not slot:
                 result[device["name"]] = {
@@ -459,23 +597,51 @@ class Agent:
             ERPNEXT_API_KEY=self.conf["api_key"],
             ERPNEXT_API_SECRET=self.conf["api_secret"],
             PYTHONIOENCODING="utf-8",
+            # Line by line, not in 8 KB blocks, or the bar would only move
+            # every few devices.
+            PYTHONUNBUFFERED="1",
         )
         log.info("  running %s", " ".join(args[1:]))
         out_path = os.path.join(LOG_DIR, f"sync_{job['name']}.log")
+        refresh_after = job["settings"].get("refresh_after_sync") and not job["dry_run"]
+        # The sync is most of the bar; re-reading the devices afterwards, the rest.
+        tracker = SyncProgress(
+            self.progress.span(0.0, 0.8 if refresh_after else 1.0),
+            [d["ip"] for d in job["targets"]],
+            with_bio=bool(job["copy_faces"] or job["copy_photos"]),
+        )
+        # Its output is read line by line as it runs, both to follow its
+        # progress and to keep the full log; a timer stops it if it overruns.
         with open(out_path, "w", encoding="utf-8") as out:
+            proc = subprocess.Popen(
+                args,
+                cwd=BASE_DIR,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            timed_out = threading.Event()
+
+            def stop():
+                timed_out.set()
+                proc.kill()
+
+            timer = threading.Timer(self.conf["sync_timeout_minutes"] * 60, stop)
+            timer.start()
             try:
-                proc = subprocess.run(
-                    args,
-                    cwd=BASE_DIR,
-                    env=env,
-                    stdout=out,
-                    stderr=subprocess.STDOUT,
-                    timeout=self.conf["sync_timeout_minutes"] * 60,
-                )
-            except subprocess.TimeoutExpired:
-                raise JobFailed(
-                    f"The sync ran past {self.conf['sync_timeout_minutes']} minutes and was stopped"
-                )
+                for line in proc.stdout:
+                    out.write(line)
+                    tracker.feed(line)
+                proc.wait()
+            finally:
+                timer.cancel()
+        if timed_out.is_set():
+            raise JobFailed(
+                f"The sync ran past {self.conf['sync_timeout_minutes']} minutes and was stopped"
+            )
         text = open(out_path, encoding="utf-8", errors="replace").read()
         sync_log = _first(r"ERPNext log created: (\S+)", text)
         done = _first(r"DONE — (.+)", text)
@@ -483,10 +649,11 @@ class Agent:
             tail = "\n".join(text.strip().splitlines()[-15:])
             raise JobFailed(f"The sync failed (exit {proc.returncode}):\n{tail}")
         result = {"sync_output": out_path}
-        if job["settings"].get("refresh_after_sync") and not job["dry_run"]:
+        if refresh_after:
             log.info("  refreshing device state after the sync")
             result["refresh"] = report_devices(
-                self.erp, job["targets"], self.sdk_ok, self.conf["bio_workers"]
+                self.erp, job["targets"], self.sdk_ok, self.conf["bio_workers"],
+                span=self.progress.span(0.8, 1.0),
             )
         return done, result, sync_log
 
@@ -494,7 +661,7 @@ class Agent:
         user = job["user"]
         uid = user["user_id"]
         result = {}
-        for device in job["targets"]:
+        for device in self._each(job["targets"], "Adding to", 0.0, 0.2):
             try:
                 if job["dry_run"]:
                     with DeviceConnection(device["ip"], device["port"]) as conn:
@@ -513,12 +680,12 @@ class Agent:
             written or job["dry_run"]
         ):
             copied = self._copy_bio(
-                job, written if not job["dry_run"] else job["targets"]
+                job, written if not job["dry_run"] else job["targets"], 0.2, 0.8
             )
             for name, r in copied.items():
                 result.setdefault(name, {}).update(r)
         if not job["dry_run"]:
-            self._report_user(job["targets"], uid)
+            self._report_user(job["targets"], uid, 0.8, 1.0)
         return (
             _summary(f"Add {user['user_name']} ({uid})", result, job["dry_run"]),
             result,
@@ -529,7 +696,7 @@ class Agent:
         user = job["user"]
         uid = user["user_id"]
         result = {}
-        for device in job["targets"]:
+        for device in self._each(job["targets"], "Updating on", 0.0, 0.7):
             try:
                 with DeviceConnection(device["ip"], device["port"]) as conn:
                     users = zk_ops.users_by_id(conn)
@@ -544,7 +711,7 @@ class Agent:
             except Exception as e:
                 result[device["name"]] = {"error": str(e)}
         if not job["dry_run"]:
-            self._report_user(job["targets"], uid)
+            self._report_user(job["targets"], uid, 0.7, 1.0)
         return (
             _summary(f"Update {user['user_name']} ({uid})", result, job["dry_run"]),
             result,
@@ -555,7 +722,7 @@ class Agent:
         user = job["user"]
         uid = str(user["user_id"])
         result = {}
-        for device in job["targets"]:
+        for device in self._each(job["targets"], "Removing from"):
             try:
                 backup = None
 
@@ -651,9 +818,9 @@ class Agent:
 
     def copy_biometrics(self, job):
         user = job["user"]
-        result = self._copy_bio(job, job["targets"])
+        result = self._copy_bio(job, job["targets"], 0.0, 0.8)
         if not job["dry_run"]:
-            self._report_user(job["targets"], user["user_id"])
+            self._report_user(job["targets"], user["user_id"], 0.8, 1.0)
         return (
             _summary(
                 f"Copy {user['user_name']} ({user['user_id']})", result, job["dry_run"]
@@ -664,10 +831,12 @@ class Agent:
 
     # -- helpers --
 
-    def _copy_bio(self, job, targets):
+    def _copy_bio(self, job, targets, lo=0.0, hi=1.0):
         """Copies the user's face, photo and fingerprints to each target that
         lacks them, from the named source or any device that has them. Never
-        replaces what a target already has."""
+        replaces what a target already has. Moves the progress bar from `lo`
+        to `hi`: looking for them first, then writing them."""
+        mid = lo + (hi - lo) * 0.4
         uid = job["user"]["user_id"]
         want_face = job["copy_faces"] and self.sdk_ok
         want_photo = job["copy_photos"] and self.sdk_ok
@@ -685,7 +854,7 @@ class Agent:
         face = photo = None
         fingers = []
         found = {}
-        for device in sources:
+        for device in self._each(sources, "Looking for the face on", lo, mid):
             if not (
                 (want_face and not face)
                 or (want_photo and not photo)
@@ -721,7 +890,7 @@ class Agent:
                 )
 
         result = {}
-        for device in targets:
+        for device in self._each(targets, "Copying to", mid, hi):
             r = {"found_on": found} if found else {"found_on": "nowhere"}
             try:
                 # A face or photo for someone the device does not have would
@@ -781,7 +950,7 @@ class Agent:
             result[device["name"]] = r
         return result
 
-    def _report_user(self, targets, uid):
+    def _report_user(self, targets, uid, lo=0.0, hi=1.0):
         try:
             report_devices(
                 self.erp,
@@ -789,6 +958,7 @@ class Agent:
                 self.sdk_ok,
                 self.conf["bio_workers"],
                 only_users={uid},
+                span=self.progress.span(lo, hi),
             )
         except Exception as e:
             log.warning("  could not report %s back: %s", uid, e)

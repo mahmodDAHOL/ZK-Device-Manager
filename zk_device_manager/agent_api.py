@@ -14,8 +14,9 @@ import json
 
 import frappe
 from frappe import _
-from frappe.utils import cint, now_datetime
+from frappe.utils import add_to_date, cint, get_datetime, now_datetime
 
+from zk_device_manager.api import past_durations
 from zk_device_manager.install import AGENT_ROLE
 
 # pyzk's privilege numbers: 0 is a plain user, 14 an administrator.
@@ -123,6 +124,8 @@ def claim_job(agent=None):
 			"status": "Running",
 			"claimed_by": (agent or "")[:140],
 			"started_at": now_datetime(),
+			"progress": 0,
+			"progress_message": _("Starting"),
 		},
 		commit=True,
 	)
@@ -200,10 +203,69 @@ def finish_job(job, status, summary=None, result=None, error=None, sync_log=None
 			"result": result if isinstance(result, str) or result is None else json.dumps(result, indent=1, default=str),
 			"error": error,
 			"sync_log": sync_log,
+			"progress": 100 if status == "Done" else doc.progress,
+			"progress_message": None,
+			"remaining_seconds": 0,
 		},
 		commit=True,
 	)
+	_publish_progress(doc.name, status=status, progress=100 if status == "Done" else doc.progress, reload=True)
 	return doc.name
+
+
+@frappe.whitelist(methods=["POST"])
+def report_progress(job, progress, message=None):
+	"""How far a running job has got, 0–100, and what it is doing now.
+
+	The time left is worked out here rather than by the agent, so it can lean
+	on how long the same job took before: early on — a percent or two in, one
+	slow device still being read — the pace so far says little, and the past
+	says more. The further the job gets, the more the pace so far counts.
+	"""
+	_only_agent()
+	row = frappe.db.get_value(
+		"ZK Job", job, ["status", "started_at", "job_type", "dry_run", "progress"], as_dict=True
+	)
+	if not row or row.status != "Running":
+		return None
+	progress = max(0.0, min(float(progress or 0), 99.9))
+	# Never backwards: parallel devices report out of step with each other.
+	progress = max(progress, float(row.progress or 0))
+	now = now_datetime()
+	elapsed = (now - get_datetime(row.started_at)).total_seconds() if row.started_at else 0
+
+	remaining = None
+	if progress >= 2 and elapsed >= 30:
+		remaining = elapsed * (100 - progress) / progress
+	past = past_durations(row.job_type, row.dry_run)
+	if past:
+		typical = sorted(past)[len(past) // 2]
+		from_past = max(typical - elapsed, 0)
+		weight = progress / 100
+		remaining = from_past if remaining is None else weight * remaining + (1 - weight) * from_past
+
+	values = {
+		"progress": round(progress, 1),
+		"progress_message": (message or "")[:140] or None,
+		"remaining_seconds": int(remaining) if remaining is not None else None,
+		"estimated_finish": add_to_date(now, seconds=int(remaining)) if remaining is not None else None,
+	}
+	frappe.db.set_value("ZK Job", job, values, update_modified=False)
+	frappe.db.commit()
+	_publish_progress(job, status="Running", **values)
+	return values["remaining_seconds"]
+
+
+def _publish_progress(job, **data):
+	"""Tells any open job form to redraw its progress bar. Sent to the job's
+	own room, so only someone looking at this job receives it."""
+	data["job"] = job
+	frappe.publish_realtime(
+		"zk_job_progress",
+		{k: (str(v) if k == "estimated_finish" and v else v) for k, v in data.items()},
+		doctype="ZK Job",
+		docname=job,
+	)
 
 
 @frappe.whitelist(methods=["POST"])

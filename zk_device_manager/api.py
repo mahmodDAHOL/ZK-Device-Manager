@@ -65,6 +65,46 @@ def queue_job(
 	return job.name
 
 
+def past_durations(job_type, dry_run=0, limit=5):
+	"""How many seconds the last few finished jobs of this kind took, newest
+	first. A dry run is counted apart: it reads everything and writes nothing,
+	so it runs much faster than the real thing."""
+	rows = frappe.get_all(
+		"ZK Job",
+		filters={
+			"job_type": job_type,
+			"status": "Done",
+			"dry_run": 1 if int(dry_run or 0) else 0,
+			"started_at": ("is", "set"),
+			"finished_at": ("is", "set"),
+		},
+		fields=["started_at", "finished_at"],
+		order_by="finished_at desc",
+		limit=limit,
+	)
+	seconds = [
+		(get_datetime(r.finished_at) - get_datetime(r.started_at)).total_seconds() for r in rows
+	]
+	return [s for s in seconds if s > 0]
+
+
+@frappe.whitelist()
+def job_estimate(job_type, dry_run=0):
+	"""What the job form says before any progress arrives: how long this kind
+	of job took the last few times."""
+	frappe.has_permission("ZK Job", "read", throw=True)
+	seconds = past_durations(job_type, dry_run)
+	if not seconds:
+		return {"count": 0}
+	ordered = sorted(seconds)
+	return {
+		"count": len(seconds),
+		"min": ordered[0],
+		"max": ordered[-1],
+		"median": ordered[len(ordered) // 2],
+	}
+
+
 @frappe.whitelist()
 def cancel_job(job):
 	doc = frappe.get_doc("ZK Job", job)
