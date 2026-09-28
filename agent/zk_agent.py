@@ -25,7 +25,8 @@ import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from logging.handlers import RotatingFileHandler
-
+from zk_ops import ADMIN_PRIVILEGE  # or set ADMIN_PRIVILEGE = 14
+from zk.exception import ZKErrorResponse  # <-- add at top of zk_agent.py
 import requests
 
 import zk_ops
@@ -40,10 +41,15 @@ log = logging.getLogger("zk-agent")
 
 
 def setup_logging():
-    fmt = logging.Formatter("%(asctime)s  %(levelname)-7s  %(message)s", "%Y-%m-%d %H:%M:%S")
+    fmt = logging.Formatter(
+        "%(asctime)s  %(levelname)-7s  %(message)s", "%Y-%m-%d %H:%M:%S"
+    )
     log.setLevel(logging.INFO)
     file_handler = RotatingFileHandler(
-        os.path.join(LOG_DIR, "agent.log"), maxBytes=5_000_000, backupCount=10, encoding="utf-8"
+        os.path.join(LOG_DIR, "agent.log"),
+        maxBytes=5_000_000,
+        backupCount=10,
+        encoding="utf-8",
     )
     file_handler.setFormatter(fmt)
     console = logging.StreamHandler()
@@ -53,6 +59,7 @@ def setup_logging():
 
 
 # ---------------- config ----------------
+
 
 def load_config():
     cfg = configparser.ConfigParser()
@@ -67,7 +74,9 @@ def load_config():
         "api_secret": get("erpnext", "api_secret", "ERPNEXT_API_SECRET"),
         "name": get("agent", "name", "ZK_AGENT_NAME") or socket.gethostname(),
         "bio_workers": int(get("agent", "bio_workers", "ZK_AGENT_BIO_WORKERS", "4")),
-        "sync_timeout_minutes": int(get("agent", "sync_timeout_minutes", "ZK_AGENT_SYNC_TIMEOUT", "240")),
+        "sync_timeout_minutes": int(
+            get("agent", "sync_timeout_minutes", "ZK_AGENT_SYNC_TIMEOUT", "240")
+        ),
     }
     missing = [k for k in ("url", "api_key", "api_secret") if not conf[k]]
     if missing:
@@ -76,6 +85,7 @@ def load_config():
 
 
 # ---------------- ERPNext ----------------
+
 
 class ERPNext:
     def __init__(self, conf):
@@ -105,11 +115,18 @@ class ERPNext:
             r = self.session.post(
                 f"{self.url}/api/method/upload_file",
                 files={"file": (file_name, f, "application/json")},
-                data={"is_private": 1, "doctype": doctype, "docname": docname, "fieldname": fieldname},
+                data={
+                    "is_private": 1,
+                    "doctype": doctype,
+                    "docname": docname,
+                    "fieldname": fieldname,
+                },
                 timeout=120,
             )
         if not r.ok:
-            raise RuntimeError(f"upload_file: HTTP {r.status_code}: {_server_message(r)}")
+            raise RuntimeError(
+                f"upload_file: HTTP {r.status_code}: {_server_message(r)}"
+            )
         message = r.json().get("message")
         if not message:
             raise RuntimeError(f"upload_file answered no file: {r.text[:300]}")
@@ -125,7 +142,11 @@ class ERPNext:
         )
         r = self.session.get(
             f"{self.url}/api/resource/File",
-            params={"filters": filters, "fields": json.dumps(["name", "file_name"]), "limit_page_length": 0},
+            params={
+                "filters": filters,
+                "fields": json.dumps(["name", "file_name"]),
+                "limit_page_length": 0,
+            },
             timeout=60,
         )
         if not r.ok:
@@ -135,7 +156,9 @@ class ERPNext:
     def delete_file(self, name):
         r = self.session.delete(f"{self.url}/api/resource/File/{name}", timeout=60)
         if r.status_code not in (200, 202):
-            raise RuntimeError(f"delete File {name}: HTTP {r.status_code}: {_server_message(r)}")
+            raise RuntimeError(
+                f"delete File {name}: HTTP {r.status_code}: {_server_message(r)}"
+            )
 
 
 def _server_message(response):
@@ -150,6 +173,7 @@ def _server_message(response):
 
 
 # ---------------- reading devices into ERPNext ----------------
+
 
 def read_device_state(device, sdk_ok, only_users=None):
     """Everything one device holds, in the shape report_users takes.
@@ -219,6 +243,7 @@ def report_devices(erp, devices, sdk_ok, workers, only_users=None):
 
 # ---------------- jobs ----------------
 
+
 class JobFailed(Exception):
     pass
 
@@ -229,7 +254,10 @@ class Agent:
         self.erp = ERPNext(conf)
         self.sdk_ok, self.sdk_why = zk_ops.sdk_available()
         if not self.sdk_ok:
-            log.warning("Faces and photos unavailable: %s. Users are still managed.", self.sdk_why)
+            log.warning(
+                "Faces and photos unavailable: %s. Users are still managed.",
+                self.sdk_why,
+            )
 
     # -- loop --
 
@@ -259,7 +287,12 @@ class Agent:
         job = self.erp.call("claim_job", agent=self.conf["name"])
         if not job:
             return False
-        log.info("JOB %s: %s%s", job["name"], job["job_type"], " (dry run)" if job["dry_run"] else "")
+        log.info(
+            "JOB %s: %s%s",
+            job["name"],
+            job["job_type"],
+            " (dry run)" if job["dry_run"] else "",
+        )
         for name in job.get("skipped_devices") or []:
             log.info("  skipping %s: disabled or unknown", name)
         handler = {
@@ -276,11 +309,21 @@ class Agent:
                 raise JobFailed(f"This agent does not know how to do {job['job_type']}")
             summary, result, sync_log = handler(job)
             status, error = "Done", None
-            failed = [d for d, r in (result or {}).items() if isinstance(r, dict) and r.get("error")]
+            failed = [
+                d
+                for d, r in (result or {}).items()
+                if isinstance(r, dict) and r.get("error")
+            ]
             if failed and len(failed) == len(result):
                 status = "Failed"
         except JobFailed as e:
-            summary, result, sync_log, status, error = str(e), None, None, "Failed", str(e)
+            summary, result, sync_log, status, error = (
+                str(e),
+                None,
+                None,
+                "Failed",
+                str(e),
+            )
         except Exception as e:
             summary, result, sync_log, status = f"Failed: {e}", None, None, "Failed"
             error = traceback.format_exc()
@@ -300,7 +343,9 @@ class Agent:
 
     def refresh(self, job):
         targets = job["targets"]
-        outcome = report_devices(self.erp, targets, self.sdk_ok, self.conf["bio_workers"])
+        outcome = report_devices(
+            self.erp, targets, self.sdk_ok, self.conf["bio_workers"]
+        )
         bad = [d for d, t in outcome.items() if t.startswith("unreachable")]
         summary = f"Read {len(targets) - len(bad)} of {len(targets)} device(s)"
         if bad:
@@ -326,9 +371,15 @@ class Agent:
           * a device is re-enabled even when reading it fails.
         """
         att = job.get("attendance") or {}
-        company, doctype, docname = att.get("company"), att.get("doctype") or "Fingerprint", att.get("docname")
+        company, doctype, docname = (
+            att.get("company"),
+            att.get("doctype") or "Fingerprint",
+            att.get("docname"),
+        )
         if not company or not docname:
-            raise JobFailed("Set the Company and the record to upload to, in ZK Settings > Attendance")
+            raise JobFailed(
+                "Set the Company and the record to upload to, in ZK Settings > Attendance"
+            )
         folder = os.path.join(LOG_DIR, "attendance")
         os.makedirs(folder, exist_ok=True)
 
@@ -336,10 +387,14 @@ class Agent:
         for device in job["targets"]:
             slot = device.get("attendance_slot")
             if not slot:
-                result[device["name"]] = {"skipped": "no attendance slot set on the ZK Device"}
+                result[device["name"]] = {
+                    "skipped": "no attendance slot set on the ZK Device"
+                }
                 continue
             device_id = f"{company}_{slot}"
-            file_name = f"{device_id}_{device['ip'].replace('.', '_')}_last_fetch_dump.json"
+            file_name = (
+                f"{device_id}_{device['ip'].replace('.', '_')}_last_fetch_dump.json"
+            )
             fieldname = f"attach_{device_id}_data".lower().replace(" ", "_")
             try:
                 records = zk_ops.read_attendance(device["ip"], device["port"])
@@ -353,8 +408,14 @@ class Agent:
                     path = os.path.join(folder, file_name)
                     with open(path, "w", encoding="utf-8") as f:
                         f.write(zk_ops.attendance_json(records))
-                    new = self.erp.upload_attachment(path, file_name, doctype, docname, fieldname)
-                    old = [x["name"] for x in self.erp.attachments(doctype, docname, fieldname) if x["name"] != new.get("name")]
+                    new = self.erp.upload_attachment(
+                        path, file_name, doctype, docname, fieldname
+                    )
+                    old = [
+                        x["name"]
+                        for x in self.erp.attachments(doctype, docname, fieldname)
+                        if x["name"] != new.get("name")
+                    ]
                     for name in old:
                         self.erp.delete_file(name)
                     r["upload"] = f"uploaded {new.get('file_url')}, replaced {len(old)}"
@@ -363,7 +424,11 @@ class Agent:
                 result[device["name"]] = {"error": str(e)}
             log.info("  %s: %s", device["name"], result[device["name"]])
 
-        done = [d for d, r in result.items() if str(r.get("upload", "")).startswith(("uploaded", "would"))]
+        done = [
+            d
+            for d, r in result.items()
+            if str(r.get("upload", "")).startswith(("uploaded", "would"))
+        ]
         failed = [d for d, r in result.items() if r.get("error")]
         summary = f"{'[DRY RUN] ' if job['dry_run'] else ''}Attendance from {len(done)} device(s)"
         total = sum(r.get("records", 0) for r in result.values())
@@ -376,7 +441,12 @@ class Agent:
         """Runs zk_union_sync.py unchanged, so the sync still writes its own
         ZK Sync Log record exactly as before."""
         script = os.path.join(BASE_DIR, "zk_union_sync.py")
-        args = [sys.executable, script, "--ips", ",".join(d["ip"] for d in job["targets"])]
+        args = [
+            sys.executable,
+            script,
+            "--ips",
+            ",".join(d["ip"] for d in job["targets"]),
+        ]
         if job["dry_run"]:
             args.append("--dry-run")
         if not job["copy_faces"]:
@@ -403,7 +473,9 @@ class Agent:
                     timeout=self.conf["sync_timeout_minutes"] * 60,
                 )
             except subprocess.TimeoutExpired:
-                raise JobFailed(f"The sync ran past {self.conf['sync_timeout_minutes']} minutes and was stopped")
+                raise JobFailed(
+                    f"The sync ran past {self.conf['sync_timeout_minutes']} minutes and was stopped"
+                )
         text = open(out_path, encoding="utf-8", errors="replace").read()
         sync_log = _first(r"ERPNext log created: (\S+)", text)
         done = _first(r"DONE — (.+)", text)
@@ -413,7 +485,9 @@ class Agent:
         result = {"sync_output": out_path}
         if job["settings"].get("refresh_after_sync") and not job["dry_run"]:
             log.info("  refreshing device state after the sync")
-            result["refresh"] = report_devices(self.erp, job["targets"], self.sdk_ok, self.conf["bio_workers"])
+            result["refresh"] = report_devices(
+                self.erp, job["targets"], self.sdk_ok, self.conf["bio_workers"]
+            )
         return done, result, sync_log
 
     def add_user(self, job):
@@ -429,17 +503,27 @@ class Agent:
                     continue
                 with DeviceConnection(device["ip"], device["port"]) as conn:
                     users = zk_ops.users_by_id(conn)
-                    result[device["name"]] = {"user": zk_ops.put_user(conn, users, user)}
+                    result[device["name"]] = {
+                        "user": zk_ops.put_user(conn, users, user)
+                    }
             except Exception as e:
                 result[device["name"]] = {"error": str(e)}
         written = [d for d in job["targets"] if "user" in result.get(d["name"], {})]
-        if any([job["copy_faces"], job["copy_photos"], job["copy_fingerprints"]]) and (written or job["dry_run"]):
-            copied = self._copy_bio(job, written if not job["dry_run"] else job["targets"])
+        if any([job["copy_faces"], job["copy_photos"], job["copy_fingerprints"]]) and (
+            written or job["dry_run"]
+        ):
+            copied = self._copy_bio(
+                job, written if not job["dry_run"] else job["targets"]
+            )
             for name, r in copied.items():
                 result.setdefault(name, {}).update(r)
         if not job["dry_run"]:
             self._report_user(job["targets"], uid)
-        return _summary(f"Add {user['user_name']} ({uid})", result, job["dry_run"]), result, None
+        return (
+            _summary(f"Add {user['user_name']} ({uid})", result, job["dry_run"]),
+            result,
+            None,
+        )
 
     def update_user(self, job):
         user = job["user"]
@@ -454,12 +538,18 @@ class Agent:
                     elif job["dry_run"]:
                         result[device["name"]] = {"would": "update"}
                     else:
-                        result[device["name"]] = {"user": zk_ops.put_user(conn, users, user)}
+                        result[device["name"]] = {
+                            "user": zk_ops.put_user(conn, users, user)
+                        }
             except Exception as e:
                 result[device["name"]] = {"error": str(e)}
         if not job["dry_run"]:
             self._report_user(job["targets"], uid)
-        return _summary(f"Update {user['user_name']} ({uid})", result, job["dry_run"]), result, None
+        return (
+            _summary(f"Update {user['user_name']} ({uid})", result, job["dry_run"]),
+            result,
+            None,
+        )
 
     def remove_user(self, job):
         user = job["user"]
@@ -473,7 +563,9 @@ class Agent:
                     with SdkConnection(device["ip"], device["port"]) as sdk:
                         face = sdk.read_face(uid)
                         if face:
-                            backup = zk_ops.backup_face(uid, face, device["ip"], reason="removed")
+                            backup = zk_ops.backup_face(
+                                uid, face, device["ip"], reason="removed"
+                            )
                 with DeviceConnection(device["ip"], device["port"]) as conn:
                     users = zk_ops.users_by_id(conn)
                     if uid not in users:
@@ -481,20 +573,70 @@ class Agent:
                     elif job["dry_run"]:
                         result[device["name"]] = {"would": "remove"}
                     else:
-                        conn.delete_user(uid=users[uid].uid, user_id=uid)
-                        result[device["name"]] = {"user": "removed", "face_backup": backup}
-                if not job["dry_run"] and result[device["name"]].get("user") == "removed":
-                    self.erp.call("report_users", device=device["name"], users=[], removed=[uid])
+                        try:
+                            deleted = conn.delete_user(user_id=str(uid))
+                        except ZKErrorResponse:
+                            match = users.get(str(uid))
+                            if (
+                                match
+                                and getattr(match, "privilege", 0) == ADMIN_PRIVILEGE
+                            ):
+                                log.info(
+                                    "JOB %s: demoting admin %s before delete",
+                                    job["name"],
+                                    uid,
+                                )
+                                conn.set_user(
+                                    uid=match.uid,
+                                    name=match.name,
+                                    privilege=0,
+                                    password=match.password,
+                                    group_id=str(match.group_id),
+                                    user_id=str(match.user_id),
+                                    card=match.card,
+                                )
+                                deleted = conn.delete_user(user_id=str(uid))
+                            else:
+                                raise
+
+                        if deleted is False:
+                            result[device["name"]] = {"skipped": "not on device"}
+                        else:
+                            result[device["name"]] = {
+                                "user": "removed",
+                                "face_backup": backup,
+                            }
+                        result[device["name"]] = {
+                            "user": "removed",
+                            "face_backup": backup,
+                        }
+                if (
+                    not job["dry_run"]
+                    and result[device["name"]].get("user") == "removed"
+                ):
+                    self.erp.call(
+                        "report_users", device=device["name"], users=[], removed=[uid]
+                    )
             except Exception as e:
                 result[device["name"]] = {"error": str(e)}
-        return _summary(f"Remove {user['user_name']} ({uid})", result, job["dry_run"]), result, None
+        return (
+            _summary(f"Remove {user['user_name']} ({uid})", result, job["dry_run"]),
+            result,
+            None,
+        )
 
     def copy_biometrics(self, job):
         user = job["user"]
         result = self._copy_bio(job, job["targets"])
         if not job["dry_run"]:
             self._report_user(job["targets"], user["user_id"])
-        return _summary(f"Copy {user['user_name']} ({user['user_id']})", result, job["dry_run"]), result, None
+        return (
+            _summary(
+                f"Copy {user['user_name']} ({user['user_id']})", result, job["dry_run"]
+            ),
+            result,
+            None,
+        )
 
     # -- helpers --
 
@@ -507,16 +649,24 @@ class Agent:
         want_photo = job["copy_photos"] and self.sdk_ok
         want_fp = job["copy_fingerprints"]
         target_names = {d["name"] for d in targets}
-        sources = [job["source"]] if job.get("source") else (
-            [d for d in job["all_devices"] if d["name"] not in target_names]
-            + [d for d in job["all_devices"] if d["name"] in target_names]
+        sources = (
+            [job["source"]]
+            if job.get("source")
+            else (
+                [d for d in job["all_devices"] if d["name"] not in target_names]
+                + [d for d in job["all_devices"] if d["name"] in target_names]
+            )
         )
 
         face = photo = None
         fingers = []
         found = {}
         for device in sources:
-            if not ((want_face and not face) or (want_photo and not photo) or (want_fp and not fingers)):
+            if not (
+                (want_face and not face)
+                or (want_photo and not photo)
+                or (want_fp and not fingers)
+            ):
                 break
             try:
                 if (want_face and not face) or (want_photo and not photo):
@@ -525,9 +675,13 @@ class Agent:
                             face = sdk.read_face(uid)
                             if face:
                                 found["face"] = device["name"]
-                                zk_ops.backup_face(uid, face, device["ip"], reason="copy")
+                                zk_ops.backup_face(
+                                    uid, face, device["ip"], reason="copy"
+                                )
                         if want_photo and not photo:
-                            photo = sdk.download_photo(uid, zk_ops.device_photo_folder(device["ip"], "copy"))
+                            photo = sdk.download_photo(
+                                uid, zk_ops.device_photo_folder(device["ip"], "copy")
+                            )
                             if photo:
                                 found["photo"] = device["name"]
                 if want_fp and not fingers:
@@ -538,7 +692,9 @@ class Agent:
                             if fingers:
                                 found["fingerprints"] = device["name"]
             except Exception as e:
-                log.warning("  %s: could not read %s from it: %s", device["name"], uid, e)
+                log.warning(
+                    "  %s: could not read %s from it: %s", device["name"], uid, e
+                )
 
         result = {}
         for device in targets:
@@ -560,8 +716,14 @@ class Agent:
                             elif job["dry_run"]:
                                 r["face"] = "would copy"
                             else:
-                                ok = sdk.write_face(uid, face) and bool(sdk.read_face(uid))
-                                r["face"] = "copied" if ok else f"refused (SDK code {sdk.last_error()})"
+                                ok = sdk.write_face(uid, face) and bool(
+                                    sdk.read_face(uid)
+                                )
+                                r["face"] = (
+                                    "copied"
+                                    if ok
+                                    else f"refused (SDK code {sdk.last_error()})"
+                                )
                         if photo:
                             folder = zk_ops.device_photo_folder(device["ip"], "check")
                             there = sdk.download_photo(uid, folder)
@@ -571,12 +733,18 @@ class Agent:
                             elif job["dry_run"]:
                                 r["photo"] = "would copy"
                             else:
-                                r["photo"] = "copied" if sdk.upload_photo(photo) else "refused"
+                                r["photo"] = (
+                                    "copied" if sdk.upload_photo(photo) else "refused"
+                                )
                 if fingers:
                     with DeviceConnection(device["ip"], device["port"]) as conn:
                         users = zk_ops.users_by_id(conn)
                         if uid not in users:
-                            r["fingerprints"] = "would copy after adding" if job["dry_run"] else "user not on this device"
+                            r["fingerprints"] = (
+                                "would copy after adding"
+                                if job["dry_run"]
+                                else "user not on this device"
+                            )
                         elif zk_ops.user_fingerprints(conn, users[uid]):
                             r["fingerprints"] = "already there"
                         elif job["dry_run"]:
@@ -591,7 +759,13 @@ class Agent:
 
     def _report_user(self, targets, uid):
         try:
-            report_devices(self.erp, targets, self.sdk_ok, self.conf["bio_workers"], only_users={uid})
+            report_devices(
+                self.erp,
+                targets,
+                self.sdk_ok,
+                self.conf["bio_workers"],
+                only_users={uid},
+            )
         except Exception as e:
             log.warning("  could not report %s back: %s", uid, e)
 
@@ -607,7 +781,11 @@ def _summary(what, result, dry_run):
         if r.get("error"):
             parts.append(f"{device}: failed ({r['error']})")
             continue
-        bits = [f"{k} {v}" for k, v in r.items() if k in ("user", "would", "skipped", "face", "photo", "fingerprints")]
+        bits = [
+            f"{k} {v}"
+            for k, v in r.items()
+            if k in ("user", "would", "skipped", "face", "photo", "fingerprints")
+        ]
         parts.append(f"{device}: {', '.join(bits) or 'nothing to do'}")
     prefix = "[DRY RUN] " if dry_run else ""
     return f"{prefix}{what} — " + "; ".join(parts)
@@ -632,8 +810,14 @@ def single_instance():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--once", action="store_true", help="Run at most one job, then exit")
-    parser.add_argument("--refresh", action="store_true", help="Read every enabled device into ERPNext, then exit")
+    parser.add_argument(
+        "--once", action="store_true", help="Run at most one job, then exit"
+    )
+    parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Read every enabled device into ERPNext, then exit",
+    )
     args = parser.parse_args()
 
     setup_logging()
@@ -649,7 +833,9 @@ def main():
         "on" if agent.sdk_ok else f"off ({agent.sdk_why})",
     )
     if args.refresh:
-        report_devices(agent.erp, cfg.get("devices") or [], agent.sdk_ok, agent.conf["bio_workers"])
+        report_devices(
+            agent.erp, cfg.get("devices") or [], agent.sdk_ok, agent.conf["bio_workers"]
+        )
         return
     if args.once:
         agent.run_one()
