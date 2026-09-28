@@ -14,6 +14,7 @@ Settings come from config.ini next to this file (see config.example.ini).
 
 import argparse
 import configparser
+import faulthandler
 import json
 import logging
 import os
@@ -33,7 +34,7 @@ import requests
 import zk_ops
 from zk_ops import DeviceConnection, SdkConnection
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -302,7 +303,7 @@ def read_device_state(device, sdk_ok, only_users=None, report=None):
     wanted = [u for u in users if only_users is None or u in only_users]
     # Users and fingerprints come in one read; faces and photos are the slow
     # part, one user at a time, so they are most of the bar.
-    report(0.05 if sdk_ok and wanted else 1.0, f"Read {len(users)} users on {device['name']}")
+    report(0.05 if sdk_ok and wanted else 0.85, f"Read {len(users)} users on {device['name']}")
     entries = {
         uid: {
             "user_id": uid,
@@ -325,8 +326,11 @@ def read_device_state(device, sdk_ok, only_users=None, report=None):
                 photos += 1 if path else 0
                 if path:
                     os.remove(path)
-                report(0.05 + 0.95 * n / len(wanted),
+                # Up to 85%: the rest of this device's share is saving what
+                # was read into ERPNext, which is not instant for 480 users.
+                report(0.05 + 0.80 * n / len(wanted),
                        f"Reading faces and photos on {device['name']}: {n} of {len(wanted)} users")
+        log.info("  %s: read faces and photos of %d users", device["name"], len(wanted))
         if only_users is None:
             info["photo_count"] = photos
     return info, list(entries.values())
@@ -349,6 +353,9 @@ def report_devices(erp, devices, sdk_ok, workers, only_users=None, span=None):
                 report(1.0, f"{device['name']} unreachable")
             erp.call("report_device", device=device["name"], error=str(e))
             return device["name"], f"unreachable: {e}"
+        if report:
+            report(0.9, f"Saving {len(entries)} users from {device['name']} to ERPNext")
+        log.info("  %s: saving %d users to ERPNext", device["name"], len(entries))
         erp.call("report_device", device=device["name"], info=info)
         res = erp.call(
             "report_users",
@@ -356,6 +363,8 @@ def report_devices(erp, devices, sdk_ok, workers, only_users=None, span=None):
             users=entries,
             complete=0 if only_users else 1,
         )
+        if report:
+            report(1.0, f"Saved {device['name']}")
         return device["name"], f"{len(entries)} users read ({res})"
 
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
@@ -1016,8 +1025,20 @@ def main():
 
     setup_logging()
     _lock = single_instance()  # noqa: F841 — held for the life of the process
+    # A crash inside the ZKTeco DLL kills the process before Python can log
+    # anything. faulthandler still writes where it happened — the Python line
+    # and every thread's stack — to crash.log.
+    crash_log = open(os.path.join(LOG_DIR, "crash.log"), "a", encoding="utf-8")
+    crash_log.write(f"\n=== agent started {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
+    crash_log.flush()
+    faulthandler.enable(file=crash_log, all_threads=True)
     agent = Agent(load_config())
     cfg = agent.heartbeat()
+    # Jobs this agent took and never closed died with it; say so now rather
+    # than leave them Running until the four-hour safety net.
+    closed = agent.erp.call("fail_orphaned_jobs", agent=agent.conf["name"])
+    if closed:
+        log.warning("Closed %d job(s) left running by the last run: %s", len(closed), ", ".join(closed))
     log.info(
         "Agent %s %s connected to %s; %d device(s); faces/photos %s",
         agent.conf["name"],

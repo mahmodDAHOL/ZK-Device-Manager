@@ -15,6 +15,7 @@ site's devices (iFace880 plus, firmware 6.60) and is relied on here:
     shows the picture, copying the face is what lets the person punch in.
 """
 
+import gc
 import json
 import logging
 import os
@@ -251,8 +252,16 @@ class SdkConnection:
         self._release()
         return False
 
-    @staticmethod
-    def _release():
+    def _release(self):
+        """Lets go of the SDK object, then closes this thread's COM apartment.
+
+        In that order. Closing the apartment while the object is still held
+        meant Python released it later — after zkemkeeper had been unloaded —
+        and the whole agent died on the spot with no error logged, right as a
+        device finished being read.
+        """
+        self.sdk = None
+        gc.collect()
         try:
             import pythoncom
 

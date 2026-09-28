@@ -32,6 +32,7 @@
   "column_break_progress",
   "estimated_finish",
   "remaining_seconds",
+  "progress_at",
   "section_break_detail",
   "error",
   "result"
@@ -212,6 +213,14 @@
    "hidden": 1
   },
   {
+   "fieldname": "progress_at",
+   "fieldtype": "Datetime",
+   "label": "Last Progress Report",
+   "read_only": 1,
+   "hidden": 1,
+   "description": "When the agent last said how far it had got. A running job silent for minutes means the agent has stopped."
+  },
+  {
    "fieldname": "section_break_detail",
    "fieldtype": "Section Break",
    "label": "Detail",
@@ -233,7 +242,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-09-28 12:00:00.000000",
+ "modified": "2026-09-28 18:00:00.000000",
  "modified_by": "Administrator",
  "module": "ZK Device Manager",
  "name": "ZK Job",

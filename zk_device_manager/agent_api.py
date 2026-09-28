@@ -125,6 +125,7 @@ def claim_job(agent=None):
 			"claimed_by": (agent or "")[:140],
 			"started_at": now_datetime(),
 			"progress": 0,
+			"progress_at": now_datetime(),
 			"progress_message": _("Starting"),
 		},
 		commit=True,
@@ -214,6 +215,34 @@ def finish_job(job, status, summary=None, result=None, error=None, sync_log=None
 
 
 @frappe.whitelist(methods=["POST"])
+def fail_orphaned_jobs(agent=None):
+	"""Called by an agent as it starts: any job it had claimed and is still
+	Running was cut off when the previous run died, and will never finish.
+	Answers their names."""
+	_only_agent()
+	names = frappe.get_all(
+		"ZK Job",
+		filters={"status": "Running", "claimed_by": (agent or "")[:140]},
+		pluck="name",
+	)
+	for name in names:
+		frappe.db.set_value(
+			"ZK Job",
+			name,
+			{
+				"status": "Failed",
+				"finished_at": now_datetime(),
+				"summary": _("The agent stopped while running this job and has restarted. Run it again."),
+				"progress_message": None,
+				"remaining_seconds": 0,
+			},
+		)
+		_publish_progress(name, status="Failed", reload=True)
+	frappe.db.commit()
+	return names
+
+
+@frappe.whitelist(methods=["POST"])
 def report_progress(job, progress, message=None):
 	"""How far a running job has got, 0–100, and what it is doing now.
 
@@ -246,6 +275,7 @@ def report_progress(job, progress, message=None):
 
 	values = {
 		"progress": round(progress, 1),
+		"progress_at": now,
 		"progress_message": (message or "")[:140] or None,
 		"remaining_seconds": int(remaining) if remaining is not None else None,
 		"estimated_finish": add_to_date(now, seconds=int(remaining)) if remaining is not None else None,
@@ -262,7 +292,7 @@ def _publish_progress(job, **data):
 	data["job"] = job
 	frappe.publish_realtime(
 		"zk_job_progress",
-		{k: (str(v) if k == "estimated_finish" and v else v) for k, v in data.items()},
+		{k: (str(v) if k in ("estimated_finish", "progress_at") and v else v) for k, v in data.items()},
 		doctype="ZK Job",
 		docname=job,
 	)

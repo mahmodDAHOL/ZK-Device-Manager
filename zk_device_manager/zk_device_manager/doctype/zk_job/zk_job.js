@@ -54,9 +54,22 @@ function zk_listen_for_progress() {
 			progress_message: data.progress_message,
 			remaining_seconds: data.remaining_seconds,
 			estimated_finish: data.estimated_finish,
+			progress_at: data.progress_at,
 		});
 		zk_draw_progress(frm, frm.doc);
 	});
+}
+
+// The agent reports at least every few seconds while it works, so a running
+// job silent for this long means the agent stopped: crashed, or its computer
+// went off. Saying "less than a minute left" then would be a lie.
+const ZK_SILENT_AFTER_SECONDS = 180;
+
+function zk_seconds_since(datetime) {
+	if (!datetime) return null;
+	// Stored in the site's time zone; compared in the reader's.
+	const user_tz = frappe.datetime.convert_to_user_tz ? frappe.datetime.convert_to_user_tz(datetime) : datetime;
+	return moment().diff(moment(user_tz), "seconds");
 }
 
 function zk_draw_progress(frm, doc) {
@@ -66,10 +79,27 @@ function zk_draw_progress(frm, doc) {
 		return;
 	}
 	const percent = Math.max(0, Math.min(100, doc.progress || 0));
+	const silent = zk_seconds_since(doc.progress_at);
 	const parts = [];
 	if (doc.progress_message) parts.push(frappe.utils.escape_html(doc.progress_message));
-	parts.push(zk_time_left(doc.remaining_seconds));
+	if (silent !== null && silent > ZK_SILENT_AFTER_SECONDS) {
+		parts.push(
+			`<span class="text-danger">${__(
+				"no word from the agent for {0} min: check that it is running on the middle server",
+				[Math.round(silent / 60)]
+			)}</span>`
+		);
+	} else {
+		parts.push(zk_time_left(doc.remaining_seconds));
+	}
 	frm.dashboard.show_progress(title, percent, `${percent.toFixed(0)}% · ${parts.join(" · ")}`);
+
+	// Keep the silence check honest between reports, which do not come when
+	// the agent is dead.
+	clearTimeout(frm._zk_silence);
+	frm._zk_silence = setTimeout(() => {
+		if (cur_frm === frm && frm.doc.status === "Running") zk_draw_progress(frm, frm.doc);
+	}, 30000);
 }
 
 function zk_time_left(seconds) {

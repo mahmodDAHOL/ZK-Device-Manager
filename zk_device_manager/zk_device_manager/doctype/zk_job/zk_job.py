@@ -20,7 +20,7 @@ class ZKJob(Document):
 		self.status = "Queued"
 		for field in (
 			"claimed_by", "started_at", "finished_at", "summary", "error", "result", "sync_log",
-			"progress", "progress_message", "estimated_finish", "remaining_seconds",
+			"progress", "progress_message", "estimated_finish", "remaining_seconds", "progress_at",
 		):
 			self.set(field, None)
 
