@@ -577,11 +577,19 @@ class Agent:
             if str(r.get("upload", "")).startswith(("uploaded", "would"))
         ]
         failed = [d for d, r in result.items() if r.get("error")]
+        no_slot = [d for d, r in result.items() if "no attendance slot" in str(r.get("skipped", ""))]
         summary = f"{'[DRY RUN] ' if job['dry_run'] else ''}Attendance from {len(done)} device(s)"
         total = sum(r.get("records", 0) for r in result.values())
         summary += f", {total} records"
         if failed:
             summary += f"; failed: {', '.join(failed)}"
+        if no_slot:
+            # Without a slot the agent cannot know which Fingerprint field the
+            # device's file belongs in, so it is not read at all.
+            summary += (
+                f"; skipped {len(no_slot)} with no Attendance Slot set on the ZK Device "
+                f"({', '.join(no_slot)})"
+            )
         return summary, result, None
 
     def sync_all(self, job):

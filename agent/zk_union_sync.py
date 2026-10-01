@@ -53,8 +53,8 @@ os.makedirs(LOG_DIR, exist_ok=True)
 
 # ================== ERPNext CONFIG ==================
 ERPNEXT_URL = os.environ.get("ERPNEXT_URL", "https://momc-erp.sy").rstrip("/")
-API_KEY = os.environ.get("ERPNEXT_API_KEY", "")
-API_SECRET = os.environ.get("ERPNEXT_API_SECRET", "")
+API_KEY = os.environ.get("ERPNEXT_API_KEY", "5f17553d124d892")
+API_SECRET = os.environ.get("ERPNEXT_API_SECRET", "376b056e369e9cb")
 
 if not API_KEY or not API_SECRET:
     print("ERPNEXT_API_KEY and ERPNEXT_API_SECRET must be set in the environment.")
@@ -664,6 +664,7 @@ def sync_bio(
 
 # ---------------- main ----------------
 def main():
+
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--dry-run", action="store_true", help="Only report, do not write to devices"
@@ -698,7 +699,6 @@ def main():
     ips = [x.strip() for x in args.ips.split(",")] if args.ips else DEVICE_IPS
     dry_run = args.dry_run
     max_workers = args.workers
-
     started_at = datetime.now()
     t0 = time.time()
 
@@ -744,6 +744,7 @@ def main():
         if args.no_photos and args.no_faces:
             result["photos"] = "skipped (--no-photos --no-faces)"
         else:
+
             bio_summary = sync_bio(
                 ips,
                 union_set,

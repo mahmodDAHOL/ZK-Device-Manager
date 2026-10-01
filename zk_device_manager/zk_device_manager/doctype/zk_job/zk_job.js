@@ -83,14 +83,13 @@ function zk_draw_progress(frm, doc) {
 	const parts = [];
 	if (doc.progress_message) parts.push(frappe.utils.escape_html(doc.progress_message));
 	if (silent !== null && silent > ZK_SILENT_AFTER_SECONDS) {
-		parts.push(
-			`<span class="text-danger">${__(
-				"no word from the agent for {0} min: check that it is running on the middle server",
-				[Math.round(silent / 60)]
-			)}</span>`
+		// Don't embed <span> — use the color argument instead
+		frm.dashboard.set_headline_alert(
+			parts.join(" · "),
+			"red"      // ← this is what the red <span> was trying to do
 		);
 	} else {
-		parts.push(zk_time_left(doc.remaining_seconds));
+		frm.dashboard.set_headline(parts.join(" · "));
 	}
 	frm.dashboard.show_progress(title, percent, `${percent.toFixed(0)}% · ${parts.join(" · ")}`);
 
